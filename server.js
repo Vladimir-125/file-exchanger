@@ -2,12 +2,13 @@
 const express = require('express')
 const bodyParser= require('body-parser')
 const multer = require('multer');
-var fs = require('fs');
-var rimraf = require("rimraf");
+const fs = require('fs');
+const rimraf = require("rimraf");
 // mysql connection to db
 var connectionPool = require('./connectdb');
 // express app
 const app = express();
+const crypto = require('crypto');
 
 // local variables
 var id;
@@ -54,6 +55,10 @@ app.get('/', function(req, res) {
     res.sendFile(__dirname + '/send-file.html');  
 });
 
+app.get('/secure', function(req, res) {
+    res.sendFile(__dirname + '/send-file-with-password.html');  
+});
+
 // send static files for user
 app.use(express.static( __dirname + "/public"));
 
@@ -63,11 +68,11 @@ app.use(express.static( __dirname + "/public"));
 // cb 
 // filename is used to determine what the file should be named inside the folder.
 var storage = multer.diskStorage({
-  destination: function (req, file, cb) { 
-    cb(null, createDir())
+  destination: function (req, file, cb) {
+    cb(null, createDir());
   },
   filename: function (req, file, cb) {
-    cb(null, file.originalname)
+    cb(null, file.originalname);
   }
 })
  
@@ -78,12 +83,27 @@ app.post('/uploadfile',  (req, res) => {
         if(err) {
             return res.end("Error uploading file.");
         }
+        //console.log(req.body.password);
+        let index = idDB.findIndex(obj => obj.file_id==id);
+
+		if(req.body.password){
+			// get password hash
+			const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
+			idDB[index].password_hash = hash; 
+		}
+
+		// insert in db
+		let sql = 'insert into files values(' + idDB[index].file_id + ',\'' + idDB[index].creation_date + '\',\'' + idDB[index].password_hash + '\');';
+		connectionPool.query(sql, function (err, result) {
+			if (err) throw err;
+		});
 
         // return download key and server store time
 		res.json({'key':id,'time':storeTime});
 
     });
 });
+
 
 app.get('/download', function(req, res) {
 	if(idDB.filter(obj => obj.file_id == req.query.fileId).length > 0){
@@ -155,21 +175,22 @@ function createMetadata(passwd){
 	while(true){
 		// create id
 		id = Math.floor(Math.random() * 9 * Math.pow(10, keyLen-1) + 1 * Math.pow(10, keyLen-1));    
-
+		// if created an id that doesn't exist in the db
 		if(!idDB.filter(obj => obj.file_id==id).length > 0){
 			let file = {};
 			file.file_id = id;
 			file.creation_date = currentDateTime();
-			if(passwd==null){
-				file.password_hash = '';
-			}
-			else{
-				file.password_hash = passwd;
-			}
-			let sql = 'insert into files values(' + file.file_id + ',\'' + file.creation_date + '\',\'' + file.password_hash + '\');';
-			connectionPool.query(sql, function (err, result) {
-    			if (err) throw err;
-  			});
+			file.password_hash = '';
+			// if(passwd==null){
+			// 	file.password_hash = '';
+			// }
+			// else{
+			// 	file.password_hash = passwd;
+			// }
+			// let sql = 'insert into files values(' + file.file_id + ',\'' + file.creation_date + '\',\'' + file.password_hash + '\');';
+			// connectionPool.query(sql, function (err, result) {
+   //  			if (err) throw err;
+  	// 		});
 			idDB.push(file);
 			break;
 		}
