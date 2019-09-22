@@ -1,0 +1,258 @@
+<html>
+<head>
+	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+	<title>Send Me File</title>
+	
+
+	<!-- jQuery library -->
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.0/jquery.min.js"></script>
+	<script src="http://cdnjs.cloudflare.com/ajax/libs/jquery.form/3.51/jquery.form.min.js"></script>
+	<!-- Popper JS -->
+	<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script> -->
+	
+	<!-- Bootstrap 4 -->
+	<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+	<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+	
+	<!-- p5.js CDN -->
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.9.0/p5.js"></script>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.9.0/addons/p5.dom.min.js"></script>
+
+
+	 <link rel="stylesheet" type="text/css" href="css/style.css"/>
+
+	<!-- Temporary script -->
+	<script>document.write('<script src="http://' + (location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1"></' + 'script>')</script>
+
+	<!-- End Temporary script -->
+
+	<style>
+
+	</style>
+	
+</head>
+<body>
+	<nav class="navbar navbar-expand-md navbar-dark bg-dark sticky-top navbar-style" style="padding: 0px 16px">
+		<div class="container-fluid">
+			<a class="navbar-brand text-uppercase" href="#">Send me file</a>
+			<button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarResponsive">
+				<span class="navbar-toggler-icon"></span>
+			</button>
+			<div class="collapse navbar-collapse" id="navbarResponsive">
+				<ul class="navbar-nav ml-auto">
+					<li class="nav-item active">
+						<a class="nav-link" href="#">Home</a></li>
+					<li class="nav-item">
+						<a class="nav-link" href="#">About</a></li>
+					<li class="nav-item">
+						<a class="nav-link" href="#">Contact</a></li>
+					<li class="nav-item">
+						<a class="nav-link" href="#">Login</a></li>
+				</ul>
+			</div>
+		</div>
+	</nav>
+	
+	<div class="container">
+		<div class="row h-100">
+
+			<div class="col-md-6 my-auto border border-secondary pt-3 rounded bg-light">
+				<div class="text-center">
+					<form action="/uploadfile" enctype="multipart/form-data" method="POST"  id='uploadForm'> 
+						<div class="custom-file mb-3">
+							<input type="file" class="custom-file-input" id="file" name="file" value="">
+							<label class="custom-file-label" for="customFile">Choose file</label>
+						</div>
+						<input type="submit" class="btn btn-outline-secondary btn-lg" value="Send"/>
+					</form>	
+				</div>
+				<!-- Progress bar -->
+				<div id="uploaded" class="my-3">
+			<!-- 		<div style="font-family:Times New Roman; font-size: 15px;">ARNON ft. Killua - Te Molla.mp3<i class="fa fa-check" style="font-size:24px;color:blue"></i><div id="key" style="display: inline; margin-left: 5px">Download Key: 1234</div><img src="https://via.placeholder.com/100" alt=""></div> -->
+
+					<!-- <div class="progress">
+						<div class="progress-bar" style="width:0%">0%</div>
+					</div> -->
+
+				</div>
+			</div>
+			
+			<div class="col-md-6 my-auto border border-secondary pt-3 rounded bg-light">
+				<div class="text-center">
+					<form action="/download"  method="GET"> 
+						<div class="custom-file mb-3">
+		   					<input type="text" name="fileId" class="form-control" placeholder="Enter Key" >
+		   				</div>
+		    			<input type="submit" class="btn btn-outline-secondary btn-lg" value="Receive"/>
+		    		</form>
+	    		</div>
+	    	</div>
+
+		</div>
+	</div>
+	<script>
+		// Add the name of the file appear on select
+		$(".custom-file-input").on("change", function() {
+			var fileName = $(this).val().split("\\").pop();
+			$(this).siblings(".custom-file-label").addClass("selected").html(fileName);
+		});
+		// delete form value after file is sent
+		$('#uploadForm').submit(function(e) {
+	   		e.preventDefault(); // prevent multiple submits
+	   		if($('#file').val()==''){
+	   			alert('File is not selected!\nSelect a file and try again.');
+	   		}else{
+
+	   			// TODO: add asinc file upload here
+	   			var form = $(this);
+			    // var url = form.attr('action');
+				
+				addProgressBar();
+
+				var progress = $('.progress-bar');
+
+			    // var data = new FormData();
+
+			    var fname = $('#file').val();
+			    fname = fname.substr(fname.lastIndexOf('\\')+1);
+			    // var name = $('<div></div>').text(fname);
+			    // name.css('font-family', 'Times New Roman');
+			    // name.css('font-size', '15px');
+			    // name.append($('<i class="fa fa-check" style="font-size:24px;color:blue"></i>'));
+				// data.append('file', $('#file').val());
+				//console.log($('#file').attr('value'))
+				form.ajaxSubmit({
+					beforeSend: function() {
+				        //status.empty();
+				        var percentVal = '0%';
+				        progress.css('width' , percentVal);
+				        progress.html(percentVal);
+				    },
+
+				    uploadProgress: function(event, position, total, percentComplete) {
+				        var percentVal = percentComplete + '%';
+				        progress.css('width' , percentVal);
+				        progress.html(percentVal);
+				    },
+
+			   		error: function(xhr) {
+			        	status('Error: ' + xhr.status);
+			        },
+
+		            success: function(response) {
+		            	var percentVal = '100%';
+				        progress.css('width', percentVal);
+				        progress.html(percentVal);
+				        setTimeout(()=>{
+		                	$('.progress').remove();
+		    				//$( "#uploaded" ).append(name);
+							addUpload(response.key, response.time, fname)
+		                	//alert(response);
+				        }, 500);
+		            }
+			    });
+	    		$('#file').val(''); // clear input form
+	    		// remove file name from input
+	    		$('.custom-file-label').removeClass('selected').html('Choose file');
+	   		}
+	   		return false;
+		});
+
+
+		// delete form value after file is sent
+		$('#downloadForm').submit(function(e) {
+	   		e.preventDefault(); // don't submit multiple times
+	    	this.submit(); // use the native submit method of the form element
+	    	$('#keyNum').val(''); // clear input form
+		});
+
+		function addProgressBar(){
+			const uploaded = $('#uploaded')
+			const progress = $('<div></div>').addClass('progress')
+			progress.append($('<div>0%</div>').addClass('progress-bar').css('width','0%'));
+			uploaded.append(progress);
+		}
+	</script>
+	<script>
+		//addUpload()
+		//addUpload()
+
+		function addUpload(key, time, filename, qr='qrcode-demo.JPG'){
+			//var key = 1236;
+			//var f = 'ARNON ft. Killua - Te Molla.mp3'
+			//var qr = 'qrcode-demo.JPG'
+			const id = randHex(12);
+			var file = `
+						<div class="card mb-2">
+						  	<div class="card-body p-2">
+						  		<div class="container">
+						  			<div class="row">
+						  				<div class="col-sm-9">
+						  					<h5 class="card-title mb-0">Download Key: ${key}</h5>
+							    			<p class="card-text">${filename}<br>Expire time: <span id="${id}">${time}</span></p>
+						  				</div>
+						  				<div class="col-sm-3">
+						  					<img src="${qr}" alt="" width="80" height="80">
+						  				</div>
+						  			</div>
+						  			
+						  		</div>
+						  	</div>
+						</div>
+						`
+
+			$('#uploaded').append($(file));
+			countTime(time, id);
+
+		}
+		function countTime(time, id){
+			time = time.split(':');
+			let h = parseInt(time[0], 10);
+			let m = parseInt(time[1], 10);
+			let s = parseInt(time[2], 10);
+			var loop;
+			if(h<0&&m<0&&s<0){
+				return
+			}
+			var check = function(){
+			    if(h==0&&m==0&&s==0){
+			    	// remove loop
+			    	$('#'+id).text('File has been expired!');
+			        clearTimeout(loop)
+			    }
+			    else {
+			        loop = setTimeout(check, 1000); // check again in a second
+			        let seconds = h*60*60+m*60+s;
+			        seconds--;
+			        h=Math.floor(seconds/(60*60));
+			        seconds = seconds - h*60*60;
+			        m=Math.floor(seconds/60);
+			        seconds = seconds - m*60;
+			        s = seconds;
+			        let text = (h ? (h > 9 ? h : "0" + h) : "00") + ":" + (m ? (m > 9 ? m : "0" + m) : "00") + ':' + (s > 9 ? s : "0" + s);
+					$('#'+id).text(text);
+			    
+			        }
+			}
+
+			check();
+		}
+		function randHex(len) {
+		var maxlen = 8,
+		      min = Math.pow(16,Math.min(len,maxlen)-1) 
+		      max = Math.pow(16,Math.min(len,maxlen)) - 1,
+		      n   = Math.floor( Math.random() * (max-min+1) ) + min,
+		      r   = n.toString(16);
+		  while ( r.length < len ) {
+		     r = r + randHex( len - maxlen );
+		  }
+		  return r;
+		};
+	</script>
+	<!-- Get backgroud script -->
+	<script type="text/javascript" src="js/background.js"></script>
+	<!-- Font awersome -->
+	<!-- <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css"> -->
+
+</body>
+</html>

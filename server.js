@@ -19,17 +19,21 @@ const secInterval = 1;
 // file storage time
 const storeMinutes = 1;
 const storeHours = 0;
+const storeTime = '00:01:00';
 // file key length
- const keyLen = 4;
+const keyLen = 4;
+const port = process.env.PORT || 3000;
 
 // config parameters <------------------------------------------------
 
 
-// init process ------------------------------------->
+// init process ----------------------------------------------------->
 
-connectionPool.query('select * from files;', function (err, result){
-if (err) throw err;
-	idDB = result;
+// load database on the server
+connectionPool.query('select * from files', function (err, result){
+	if (err) throw err;
+		idDB = result;
+
 	console.log('Database has beed loaded on the server!');
 });
 
@@ -42,12 +46,12 @@ setInterval(function(){
 	 }
 }, secInterval*1000);
 
-// init process <-------------------------------------
+// init process <------------------------------------------------------
 
 
 // root directory
 app.get('/', function(req, res) {
-    res.sendFile(__dirname + '/index.html');  
+    res.sendFile(__dirname + '/send-file.html');  
 });
 
 // send static files for user
@@ -67,22 +71,19 @@ var storage = multer.diskStorage({
   }
 })
  
-var upload = multer({ storage: storage })
+var upload = multer({ storage: storage }).single('file');
 
-app.post('/uploadfile', upload.single('myFile'), (req, res, next) => {
-  const file = req.file;
-  if (!file) {
-    const error = new Error('Please upload a file');
-    error.httpStatusCode = 400;
-    return next(error);
-  }
-  else{
-  	res.write('<script>alert(\'File has been successfully uploaded. Your key is:' + id + '\')</script>');
-	res.write('<script>window.history.back()</script>');
-	//end the response process
- 	res.end()
-  }
-})
+app.post('/uploadfile',  (req, res) => {
+  upload(req,res,function(err) {
+        if(err) {
+            return res.end("Error uploading file.");
+        }
+
+        // return download key and server store time
+		res.json({'key':id,'time':storeTime});
+
+    });
+});
 
 app.get('/download', function(req, res) {
 	if(idDB.filter(obj => obj.file_id == req.query.fileId).length > 0){
@@ -107,26 +108,6 @@ app.get('/download', function(req, res) {
 	}
 });
 
-app.get('/delete/:id', function(req, res) {
-	var FileObj = idDB.find(obj => obj.file_id === parseInt(req.params.id));
-	if(FileObj != null){
-		//res.send(FileObj.creation_date.toString());
-		deleteOld(FileObj);
-		res.send('Ok!')
-		// rimraf("./uploads/"+req.params.id, function () { res.send('Deleted!'); });
-		// connectionPool.query('DELETE FROM files WHERE file_id =' + req.params.id, function (err, result){
-		// 	if (err) throw err;
-		// });
-		// let index = idDB.indexOf(FileObj);
-		// if (index > -1) {
- 	// 		idDB.splice(index, 1);
-		// }
-	}
-	else{
-		res.send('File does not exist!');
-	}
-});
-
 
 function deleteOld(file){
 	const min = storeMinutes;
@@ -146,7 +127,9 @@ function deleteOld(file){
 
 	if(totalSeconds > waitTime){
 		//console.log('File has been on the server ' + totalSeconds + ' seconds.');
-		rimraf("./uploads/" + file.file_id, function () { console.log('File has beed deleted!'); });
+		rimraf("./uploads/" + file.file_id, function () { 
+			console.log('File has beed deleted!'); 
+		});
 		connectionPool.query('DELETE FROM files WHERE file_id =' + file.file_id, function (err, result){
 			if (err) throw err;
 		});
@@ -155,9 +138,6 @@ function deleteOld(file){
  			idDB.splice(index, 1);
 		}
 	}
-	//else{
-		//console.log('File has been on the server ' + totalSeconds + ' seconds.');
-	//}
 }
 
 function createDir(){
@@ -202,4 +182,6 @@ function currentDateTime(){
 	return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + d.getHours() + ':' + d.getMinutes() + ':' + d.getSeconds();
 }
 
-app.listen(3000, () => console.log('Server started on port 3000'));
+app.listen(port, ()=>{
+	console.log('Running at Port: ' + port);
+});
