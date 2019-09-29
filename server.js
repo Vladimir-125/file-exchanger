@@ -83,8 +83,8 @@ app.post('/uploadfile',  (req, res) => {
         if(err) {
             return res.end("Error uploading file.");
         }
-        //console.log(req.body.password);
-        let index = idDB.findIndex(obj => obj.file_id==id);
+
+        const index = idDB.findIndex(obj => obj.file_id==id);
 
 		if(req.body.password){
 			// get password hash
@@ -104,11 +104,82 @@ app.post('/uploadfile',  (req, res) => {
     });
 });
 
+app.post('/validate', function(req, res) {
+	const req_key = req.body.key;
+    const passwd =  req.body.password;
+    const index = idDB.findIndex(obj => obj.file_id == req_key);
 
-app.get('/download', function(req, res) {
-	if(idDB.filter(obj => obj.file_id == req.query.fileId).length > 0){
+    // if file exist, get index of the file
+    if(index >= 0){
+    	// if file id in db
+    	if(idDB[index].password_hash != ''){
+    		// if file has a password
+    		if(passwd==undefined){
+    			res.end('enc');
+    		}else{
+    			const passhash = crypto.createHash('sha256').update(passwd).digest('hex');
+    			if(idDB[index].password_hash == passhash){
+    				res.end('ok');
+    			}else{
+    				// wrong password
+    				res.end('wrongpass');
+    			}
+    		}
+    	}else{
+    		// file does not has a password
+    		res.end('ok');
+    	}
+    }else{
+    	// if file id is not in db
+    	res.end('isnx');
+
+    }
+});
+
+app.post('/download', function(req, res) {
+    
+    const req_key = req.body.key;
+    const passwd =  req.body.password;
+    const index = idDB.findIndex(obj => obj.file_id == req_key);
+    console.log(req_key)
+    console.log(req.body)
+    // if file exist, get index of the file
+    if(index >= 0){
+    	// if file id in db
+    	if(idDB[index].password_hash != ''){
+    		// if file has a password
+    		console.log('req.body.password: ' + passwd);
+    		if(passwd==undefined){
+    			res.end('Enter password');
+    		}else{
+    			const passhash = crypto.createHash('sha256').update(passwd).digest('hex');
+    			if(idDB[index].password_hash == passhash){
+    				console.log('File has been send!')
+    				var folder = './uploads/' + req_key;
+					fs.readdir(folder, (err, files) => {
+						// files has names of all the files.
+						// download first file from the folder
+						res.download(folder + '/' + files[0]);
+						// TODO: add download all the content in the folder in one link  
+					}); 
+    			}else{
+    				// wrong password
+    				res.end('<script>alert(\'Wrong password!\')</script>');
+    			}
+    		}
+    	}else{
+    		// file does not has a password
+    		console.log('File does not have a password!')
+    	}
+    }else{
+    	// if file id is not in db
+    	console.log('File does not exist')
+
+    }
+
+	if(idDB.filter(obj => obj.file_id == req_key).length > 0){
 		// id folder with the file
-		var folder = './uploads/' + req.query.fileId;
+		var folder = './uploads/' + req_key;
 		fs.readdir(folder, (err, files) => {
 			// files has names of all the files.
 			// download first file from the folder
@@ -118,11 +189,12 @@ app.get('/download', function(req, res) {
 	}
 	else{
 		//set the appropriate HTTP header
-  		res.setHeader('Content-Type', 'text/html');
-		res.status(404);
+  		//res.setHeader('Content-Type', 'text/html');
+		//res.status(404);
 		//res.sendFile(__dirname + '/statics/fileNotFound.html');  
-		res.write('<script>alert(\'Invalid key!\')</script>');
-		res.write('<script>window.history.back()</script>');
+		res.send('File is not found!')
+		//res.write('<script>alert(\'Invalid key!\')</script>');
+		//res.write('<script>window.history.back()</script>');
 		//end the response process
  		res.end();
 	}
@@ -181,16 +253,7 @@ function createMetadata(passwd){
 			file.file_id = id;
 			file.creation_date = currentDateTime();
 			file.password_hash = '';
-			// if(passwd==null){
-			// 	file.password_hash = '';
-			// }
-			// else{
-			// 	file.password_hash = passwd;
-			// }
-			// let sql = 'insert into files values(' + file.file_id + ',\'' + file.creation_date + '\',\'' + file.password_hash + '\');';
-			// connectionPool.query(sql, function (err, result) {
-   //  			if (err) throw err;
-  	// 		});
+
 			idDB.push(file);
 			break;
 		}
@@ -202,6 +265,8 @@ function currentDateTime(){
 	var d = new Date();
 	return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + d.getHours() + ':' + d.getMinutes() + ':' + d.getSeconds();
 }
+
+
 
 app.listen(port, ()=>{
 	console.log('Running at Port: ' + port);
