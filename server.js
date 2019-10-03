@@ -3,11 +3,14 @@ const express = require('express')
 const bodyParser= require('body-parser')
 const multer = require('multer');
 const fs = require('fs');
+// remove file directory
 const rimraf = require("rimraf");
 // mysql connection to db
 const connectionPool = require('./connectdb');
 // express app
 const app = express();
+
+// file encryption
 const crypto = require('crypto');
 const path = require('path');
 const zlib = require('zlib');
@@ -16,7 +19,7 @@ const AppendInitVect = require('./appendInitVect');
 const mime = require('mime');
 
 // local variables
-var id;
+//var id;
 var idDB = []; // local database
 
 // config parameters ----------------------------------------------->
@@ -87,33 +90,39 @@ app.post('/uploadfile', upload.single('file'), (req, res, next) => {
     return next(error);
   }
   else{
+  	// create file id and creation date
+	const fdata = createMetadata();
 
   	// choose storage method
   	if(req.body.password){
-  		encrypt(file.buffer, file.originalname, req.body.password);
+  		encrypt(file.buffer, file.originalname, req.body.password, fdata);
+  		// get password hash
+		const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
+		fdata.password_hash = hash;
   	}else{
   		//encrypt encrypt and stores file
-  		storeBuffer(file.buffer, file.originalname);
+  		storeBuffer(file.buffer, file.originalname, fdata);
   	}
 
   	// TODO: return file object instead of simply putting it
-  	const index = idDB.findIndex(obj => obj.file_id==id);
+  	//const index = idDB.findIndex(obj => obj.file_id==id);
 
-  	// redu id transfer method
-	if(req.body.password){
-		// get password hash
-		const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
-		idDB[index].password_hash = hash; 
-	}
+ //  	// redu id transfer method
+	// if(req.body.password){
+	// 	// get password hash
+	// 	const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
+	// 	fdata.password_hash = hash; 
+	// }
 
   	// insert in db
-	let sql = 'insert into files values(' + idDB[index].file_id + ',\'' + idDB[index].creation_date + '\',\'' + idDB[index].password_hash + '\');';
+  	idDB.push(fdata);
+	let sql = 'insert into files values(' + fdata.file_id + ',\'' + fdata.creation_date + '\',\'' + fdata.password_hash + '\');';
 	connectionPool.query(sql, function (err, result) {
 		if (err) throw err;
 	});
 
     // return download key and server store time
-	res.json({'key':id,'time':storeTime});
+	res.json({'key':fdata.file_id,'time':storeTime});
   }
 })
 
@@ -226,30 +235,27 @@ function deleteOld(file){
 	}
 }
 
-function createDir(){
-	// create file id and creation date
-	createMetadata();
+function createDir(fdata){
 	// create directory
-	var dir = './uploads/' + id;
+	var dir = './uploads/' + fdata.file_id;
 	if (!fs.existsSync(dir)){
 	    fs.mkdirSync(dir);
 	}
-	return 'uploads/' + id.toString();
+	return 'uploads/' + fdata.file_id.toString();
 }
 
 function createMetadata(){
 	while(true){
 		// create id
-		id = Math.floor(Math.random() * 9 * Math.pow(10, keyLen-1) + 1 * Math.pow(10, keyLen-1));    
+		let id = Math.floor(Math.random() * 9 * Math.pow(10, keyLen-1) + 1 * Math.pow(10, keyLen-1));    
 		// if created an id that doesn't exist in the db
 		if(!idDB.filter(obj => obj.file_id==id).length > 0){
-			let file = {};
-			file.file_id = id;
-			file.creation_date = currentDateTime();
-			file.password_hash = '';
+			let fileInfo = {};
+			fileInfo.file_id = id;
+			fileInfo.creation_date = currentDateTime();
+			fileInfo.password_hash = '';
 
-			idDB.push(file);
-			break;
+			return fileInfo;
 		}
 	}
 }
@@ -261,7 +267,7 @@ function currentDateTime(){
 }
 
 
-function encrypt(file, name, password) {
+function encrypt(file, name, password, fdata) {
 	// Generate a secure, pseudo random initialization vector.
 	const initVect = crypto.randomBytes(16);
 	var readStream = new stream.PassThrough();
@@ -277,7 +283,7 @@ function encrypt(file, name, password) {
 	const cipher = crypto.createCipheriv('aes256', CIPHER_KEY, initVect);
 	const appendInitVect = new AppendInitVect(initVect);
 	// Create a write stream with a different file extension.
-	const writeStream = fs.createWriteStream(path.join( createDir() + '/' + name + ".enc"));
+	const writeStream = fs.createWriteStream(path.join( createDir(fdata) + '/' + name + ".enc"));
 
 	readStream
 		.pipe(gzip)
@@ -318,16 +324,17 @@ function decrypt(file, password, res) {
 	});
 }
 
-function storeBuffer(buffer, fname){
+function storeBuffer(buffer, fname, fdata){
 	var readStream = new stream.PassThrough();
 
 	// Write your buffer
 	readStream.end(buffer);
 
-	const writeStream = fs.createWriteStream(path.join( createDir() + '/' + fname));
+	const writeStream = fs.createWriteStream(path.join( createDir(fdata) + '/' + fname));
 
 	readStream.pipe(writeStream);
 }
+
 function getCipherKey(password) {
   return crypto.createHash('sha256').update(password).digest();
 }
