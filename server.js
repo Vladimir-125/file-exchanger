@@ -48,6 +48,7 @@ connectionPool.query('select * from files', function (err, result){
 
 app.use(bodyParser.urlencoded({extended: true}));
 
+
 // set interval how often to delete
 setInterval(function(){
 	 for(let i = 0; i < idDB.length; i++){
@@ -164,6 +165,7 @@ app.post('/download', function(req, res) {
     const passwd =  req.body.password;
     const index = idDB.findIndex(obj => obj.file_id == req_key);
     // if file exist, get index of the file
+    console.log('Entered download');
     if(index >= 0){
     	// if file id in db
     	if(idDB[index].password_hash != ''){
@@ -187,6 +189,7 @@ app.post('/download', function(req, res) {
     			}
     		}
     	}else{
+    		console.log('Start download');
     		// file does not has a password
     		var folder = './uploads/' + req_key;
 				fs.readdir(folder, (err, files) => {
@@ -198,11 +201,62 @@ app.post('/download', function(req, res) {
     	}
     }else{
     	// if file id is not in db
-    	res.end('<script>alert(\'File does not exist!\')</script>');
+    	res.end('<script>alert(\'File does not exist!\');document.location.href="/";</script>');
     }
 
 });
 
+app.get('/download', (req, res)=>{
+	const req_key = req.query.key;
+	const index = idDB.findIndex(obj => obj.file_id == req_key);
+    // if file exist, get index of the file
+    if(index >= 0){
+    	// if file id in db
+    	if(idDB[index].password_hash != ''){
+    		//if file has a password
+    		//get password...
+    		let script = `
+						<!DOCTYPE html>
+						<html>
+						<head>
+						</head>
+						<body>
+							<script>
+								var form = document.createElement("form");                 
+								var key = document.createElement("input");                 
+								var pass = document.createElement("input");
+								key.value = ${req_key};
+								pass.value = prompt('Enter password:');
+								key.setAttribute('name', 'key');
+								key.style.visibility = "hidden";
+								pass.style.visibility = "hidden";
+								pass.setAttribute('name', 'password');                
+								form.setAttribute('method', 'post');
+								form.setAttribute('action', '/download');
+								form.appendChild(key);                              
+								form.appendChild(pass);                              
+								document.body.appendChild(form).submit();
+								setTimeout(()=>{document.location.href="/";}, 1000);
+							</script>
+						</body>
+						</html>
+    					`;
+    		res.end(script);
+    	}else{
+    		// file does not has a password
+    		var folder = './uploads/' + req_key;
+				fs.readdir(folder, (err, files) => {
+					// files has names of all the files.
+					// download first file from the folder
+					res.download(folder + '/' + files[0]);
+					// TODO: add download all the content in the folder in one link  
+				}); 
+    	}
+    }else{
+    	// if file id is not in db
+    	res.end('<script>alert(\'File does not exist!\');document.location.href="/";</script>');
+    }
+});
 
 function deleteOld(file){
 	const min = storeMinutes;

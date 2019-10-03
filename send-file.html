@@ -157,12 +157,11 @@
 		}
 	</script>
 	<script>
+		function addUpload(key, time, filename){
+		
 
-		function addUpload(key, time, filename, qr='qrcode-demo.JPG'){
-			//var key = 1236;
-			//var f = 'ARNON ft. Killua - Te Molla.mp3'
-			//var qr = 'qrcode-demo.JPG'
-			const id = randHex(12);
+			const timerId = randHex(12);
+			const qrCodeId = randHex(12);
 			var file = `
 						<div class="card mb-2">
 						  	<div class="card-body p-2">
@@ -170,10 +169,9 @@
 						  			<div class="row">
 						  				<div class="col-sm-9">
 						  					<h5 class="card-title mb-0">Download Key: ${key}</h5>
-							    			<p class="card-text">${filename}<br>Expire time: <span id="${id}">${time}</span></p>
+							    			<p class="card-text">${filename}<br>Expire time: <span id="${timerId}">${time}</span></p>
 						  				</div>
-						  				<div class="col-sm-3">
-						  					<img src="${qr}" alt="" width="80" height="80">
+						  				<div class="col-sm-3" id="${qrCodeId}">
 						  				</div>
 						  			</div>
 						  			
@@ -181,9 +179,15 @@
 						  	</div>
 						</div>
 						`
-
+			
 			$('#uploaded').append($(file));
-			countTime(time, id);
+			var qrcode = new QRCode(document.getElementById(qrCodeId), {
+				width : 80,
+				height : 80
+			});
+			qrcode.makeCode(window.location.origin+'/download?key='+key);
+
+			countTime(time, timerId);
 
 		}
 		// delete form value after file is sent
@@ -232,6 +236,10 @@
 	<!-- custom script -->
 	<link rel="stylesheet" type="text/css" href="css/style.css"/>
 	<script type="text/javascript" src="/js/script.js"></script>
+
+	<!-- qrcode generator -->
+	<script type="text/javascript" src="js/qrcode.min.js"></script>
+
 
 
 </body>
