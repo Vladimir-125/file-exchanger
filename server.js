@@ -5,10 +5,15 @@ const multer = require('multer');
 const fs = require('fs');
 const rimraf = require("rimraf");
 // mysql connection to db
-var connectionPool = require('./connectdb');
+const connectionPool = require('./connectdb');
 // express app
 const app = express();
 const crypto = require('crypto');
+const path = require('path');
+const zlib = require('zlib');
+const stream = require('stream');
+const AppendInitVect = require('./appendInitVect');
+const mime = require('mime');
 
 // local variables
 var id;
@@ -63,46 +68,54 @@ app.get('/secure', function(req, res) {
 app.use(express.static( __dirname + "/public"));
 
 
+
 // storage defines where the file shoul be stored
 // destination is used to determine within which folder the uploaded files should be stored.
 // cb 
 // filename is used to determine what the file should be named inside the folder.
-var storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, createDir());
-  },
-  filename: function (req, file, cb) {
-    cb(null, file.originalname);
+var storage = multer.memoryStorage()
+ 
+var upload = multer({ storage: storage });
+
+
+app.post('/uploadfile', upload.single('file'), (req, res, next) => {
+  const file = req.file;
+  if (!file) {
+  	// file has not been sent
+    const error = new Error('Please upload a file');
+    error.httpStatusCode = 400;
+    return next(error);
+  }
+  else{
+
+  	// choose storage method
+  	if(req.body.password){
+  		encrypt(file.buffer, file.originalname, req.body.password);
+  	}else{
+  		//encrypt encrypt and stores file
+  		storeBuffer(file.buffer, file.originalname);
+  	}
+
+  	// TODO: return file object instead of simply putting it
+  	const index = idDB.findIndex(obj => obj.file_id==id);
+
+  	// redu id transfer method
+	if(req.body.password){
+		// get password hash
+		const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
+		idDB[index].password_hash = hash; 
+	}
+
+  	// insert in db
+	let sql = 'insert into files values(' + idDB[index].file_id + ',\'' + idDB[index].creation_date + '\',\'' + idDB[index].password_hash + '\');';
+	connectionPool.query(sql, function (err, result) {
+		if (err) throw err;
+	});
+
+    // return download key and server store time
+	res.json({'key':id,'time':storeTime});
   }
 })
- 
-var upload = multer({ storage: storage }).single('file');
-
-app.post('/uploadfile',  (req, res) => {
-  upload(req,res,function(err) {
-        if(err) {
-            return res.end("Error uploading file.");
-        }
-
-        const index = idDB.findIndex(obj => obj.file_id==id);
-
-		if(req.body.password){
-			// get password hash
-			const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
-			idDB[index].password_hash = hash; 
-		}
-
-		// insert in db
-		let sql = 'insert into files values(' + idDB[index].file_id + ',\'' + idDB[index].creation_date + '\',\'' + idDB[index].password_hash + '\');';
-		connectionPool.query(sql, function (err, result) {
-			if (err) throw err;
-		});
-
-        // return download key and server store time
-		res.json({'key':id,'time':storeTime});
-
-    });
-});
 
 app.post('/validate', function(req, res) {
 	const req_key = req.body.key;
@@ -141,25 +154,22 @@ app.post('/download', function(req, res) {
     const req_key = req.body.key;
     const passwd =  req.body.password;
     const index = idDB.findIndex(obj => obj.file_id == req_key);
-    console.log(req_key)
-    console.log(req.body)
     // if file exist, get index of the file
     if(index >= 0){
     	// if file id in db
     	if(idDB[index].password_hash != ''){
     		// if file has a password
-    		console.log('req.body.password: ' + passwd);
     		if(passwd==undefined){
     			res.end('Enter password');
     		}else{
     			const passhash = crypto.createHash('sha256').update(passwd).digest('hex');
     			if(idDB[index].password_hash == passhash){
-    				console.log('File has been send!')
     				var folder = './uploads/' + req_key;
 					fs.readdir(folder, (err, files) => {
 						// files has names of all the files.
 						// download first file from the folder
-						res.download(folder + '/' + files[0]);
+						const file = folder + '/' + files[0];
+						decrypt(file, passwd, res);
 						// TODO: add download all the content in the folder in one link  
 					}); 
     			}else{
@@ -169,35 +179,19 @@ app.post('/download', function(req, res) {
     		}
     	}else{
     		// file does not has a password
-    		console.log('File does not have a password!')
+    		var folder = './uploads/' + req_key;
+				fs.readdir(folder, (err, files) => {
+					// files has names of all the files.
+					// download first file from the folder
+					res.download(folder + '/' + files[0]);
+					// TODO: add download all the content in the folder in one link  
+				}); 
     	}
     }else{
     	// if file id is not in db
-    	console.log('File does not exist')
-
+    	res.end('<script>alert(\'File does not exist!\')</script>');
     }
 
-	if(idDB.filter(obj => obj.file_id == req_key).length > 0){
-		// id folder with the file
-		var folder = './uploads/' + req_key;
-		fs.readdir(folder, (err, files) => {
-			// files has names of all the files.
-			// download first file from the folder
-			res.download(folder + '/' + files[0]);
-			// TODO: add download all the content in the folder in one link  
-		}); 
-	}
-	else{
-		//set the appropriate HTTP header
-  		//res.setHeader('Content-Type', 'text/html');
-		//res.status(404);
-		//res.sendFile(__dirname + '/statics/fileNotFound.html');  
-		res.send('File is not found!')
-		//res.write('<script>alert(\'Invalid key!\')</script>');
-		//res.write('<script>window.history.back()</script>');
-		//end the response process
- 		res.end();
-	}
 });
 
 
@@ -243,7 +237,7 @@ function createDir(){
 	return 'uploads/' + id.toString();
 }
 
-function createMetadata(passwd){
+function createMetadata(){
 	while(true){
 		// create id
 		id = Math.floor(Math.random() * 9 * Math.pow(10, keyLen-1) + 1 * Math.pow(10, keyLen-1));    
@@ -266,6 +260,77 @@ function currentDateTime(){
 	return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + d.getHours() + ':' + d.getMinutes() + ':' + d.getSeconds();
 }
 
+
+function encrypt(file, name, password) {
+	// Generate a secure, pseudo random initialization vector.
+	const initVect = crypto.randomBytes(16);
+	var readStream = new stream.PassThrough();
+
+	// Write your buffer
+	readStream.end(file);
+
+	// Pipe it to something else  (i.e. stdout)
+	// Generate a cipher key from the password.
+	const CIPHER_KEY = getCipherKey(password);
+	//const readStream = file;
+	const gzip = zlib.createGzip();
+	const cipher = crypto.createCipheriv('aes256', CIPHER_KEY, initVect);
+	const appendInitVect = new AppendInitVect(initVect);
+	// Create a write stream with a different file extension.
+	const writeStream = fs.createWriteStream(path.join( createDir() + '/' + name + ".enc"));
+
+	readStream
+		.pipe(gzip)
+		.pipe(cipher)
+		.pipe(appendInitVect)
+		.pipe(writeStream);
+}
+
+function decrypt(file, password, res) {
+	// First, get the initialization vector from the file.
+	const readInitVect = fs.createReadStream(file, { end: 15 });
+
+	let initVect;
+	readInitVect.on('data', (chunk) => {
+	initVect = chunk;
+	});
+
+	// Once we’ve got the initialization vector, we can decrypt the file.
+	readInitVect.on('close', () => {
+		const cipherKey = getCipherKey(password);
+		const readStream = fs.createReadStream(file, { start: 16 });
+		const decipher = crypto.createDecipheriv('aes256', cipherKey, initVect);
+		const unzip = zlib.createUnzip();
+
+		// remove .enc part
+		file = file.substr(0, file.length-4);
+
+		var filename = path.basename(file);
+		var mimetype = mime.getType(file);
+
+		res.setHeader('Content-disposition', 'attachment; filename=' + filename);
+		res.setHeader('Content-type', mimetype);
+
+		readStream
+		  	.pipe(decipher)
+		  	.pipe(unzip)
+		  	.pipe(res);
+	});
+}
+
+function storeBuffer(buffer, fname){
+	var readStream = new stream.PassThrough();
+
+	// Write your buffer
+	readStream.end(buffer);
+
+	const writeStream = fs.createWriteStream(path.join( createDir() + '/' + fname));
+
+	readStream.pipe(writeStream);
+}
+function getCipherKey(password) {
+  return crypto.createHash('sha256').update(password).digest();
+}
 
 
 app.listen(port, ()=>{
