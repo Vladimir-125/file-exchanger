@@ -1,12 +1,14 @@
 // call all the required packages
-const express = require('express')
-const bodyParser= require('body-parser')
+const express = require('express');
+const bodyParser= require('body-parser');
 const multer = require('multer');
 const fs = require('fs');
 // remove file directory
 const rimraf = require("rimraf");
 // mysql connection to db
 const connectionPool = require('./connectdb');
+const cookieParser = require('cookie-parser'); // store cookie to clients machine
+const session = require('express-session'); // login confirmation
 // express app
 const app = express();
 
@@ -48,6 +50,27 @@ connectionPool.query('select * from files', function (err, result){
 
 app.use(bodyParser.urlencoded({extended: true}));
 
+// initialize cookie-parser to allow us access the cookies stored in the browser. 
+app.use(cookieParser());
+
+// initialize express-session to allow us track the logged-in user across sessions.
+app.use(session({secret: "Secret key protecter string",
+   				key: 'user_sid',
+				resave: false,
+			    saveUninitialized: true,
+			    cookie: {
+			    	// expires in an hour
+			        expires: 600000
+			    }
+}));
+
+var loginChecker = (req, res, next) => {
+    if (!req.session.logged) {
+        res.redirect('/');
+    } else {
+        next();
+    }    
+};
 
 // set interval how often to delete
 setInterval(function(){
@@ -64,9 +87,51 @@ app.get('/', function(req, res) {
     res.sendFile(__dirname + '/send-file.html');  
 });
 
-app.get('/secure', function(req, res) {
+app.get('/secure', loginChecker, function(req, res) {
     res.sendFile(__dirname + '/send-file-with-password.html');  
 });
+
+app.get('/signup', function(req, res) {
+    res.sendFile(__dirname + '/statics/signup.html');  
+});
+
+app.post('/signup', function(req, res) {
+	const uname = req.body.uname;
+	const uemail = req.body.uemail.toLowerCase();
+	const salt = randHex(16);
+	const upasswordhash = crypto.createHash('sha256').update(salt+req.body.upassword).digest('hex');
+	const confirm_url = crypto.createHash('sha256').update(uemail).digest('hex');
+	// check if email is already exist
+
+	checkEmail(uemail).then(function(result){
+		if(result.length>0){
+			// this user is already in db
+			res.end('You have been already signed up before!');
+
+		}else{
+			// new user
+			let sql = `insert into \`not_confirmed\` (\`name\`, \`email\`,\`salt\`, \`password_hash\`, \`confirm_url\`) values('${uname}','${uemail}','${salt}','${upasswordhash}', '${confirm_url}')`;
+			connectionPool.query(sql, function (err, result){
+				if (err) throw err;
+			});
+			res.end('Welcome new user! Please confirm your email!');
+		}	
+		
+	}).catch((err)=>setImmediate(()=>{throw err;}));
+});
+
+function checkEmail(email){
+	return new Promise(function(resolve, reject){
+		const sql = `select * from users where email='${email}'`;	
+		connectionPool.query(sql, function (err, result){
+		if (err){
+			return reject(err);
+		};
+		resolve(result);
+		});
+	});
+}
+
 
 // send static files for user
 app.use(express.static( __dirname + "/public"));
@@ -81,6 +146,34 @@ var storage = multer.memoryStorage()
  
 var upload = multer({ storage: storage });
 
+app.post('/login', (req, res)=>{
+	const email = req.body.email.toLowerCase();
+	const sql = `select * from users where email='${email}'`;
+	connectionPool.query(sql, function (err, result){
+		if (err) throw err;
+			if(result.length>0){
+				const passwordHash = crypto.createHash('sha256').update(result[0].salt+req.body.password).digest('hex'); // temp value
+				if(passwordHash===result[0].password_hash){
+					req.session.logged = true;
+					req.session.userName = result[0].name;
+					req.session.userId = result[0].id;
+					req.session.userEmail = result[0].email;
+					res.redirect('/secure');
+				}else{
+					// wrong password
+					res.end('Wrong email or password!');
+				}
+							
+			}else{
+				// wrong email
+				res.end('Wrong email or password!');				
+			}
+	});
+});
+
+app.post('/name', loginChecker, (req, res)=>{
+	res.end(req.session.userName);
+});
 
 app.post('/uploadfile', upload.single('file'), (req, res, next) => {
   const file = req.file;
@@ -393,6 +486,17 @@ function getCipherKey(password) {
   return crypto.createHash('sha256').update(password).digest();
 }
 
+function randHex(len) {
+var maxlen = 8,
+      min = Math.pow(16,Math.min(len,maxlen)-1) 
+      max = Math.pow(16,Math.min(len,maxlen)) - 1,
+      n   = Math.floor( Math.random() * (max-min+1) ) + min,
+      r   = n.toString(16);
+  while ( r.length < len ) {
+     r = r + randHex( len - maxlen );
+  }
+  return r;
+};
 
 app.listen(port, ()=>{
 	console.log('Running at Port: ' + port);

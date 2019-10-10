@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Sign up</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+	<script>document.write('<script src="http://' + (location.host || 'localhost').split(':')[0] + ':35729/livereload.js?snipver=1"></' + 'script>')</script>
+
+	<!-- Bootstrap 4 -->
+	<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+	<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+</head>
+<body>
+<nav class="navbar navbar-expand-md navbar-dark bg-dark sticky-top navbar-style" style="padding: 0px 16px">
+	<div class="container-fluid">
+		<a class="navbar-brand text-uppercase" href="/">Send me file</a>
+	</div>
+</nav>
+
+	<div class="container">
+		<div class="row">
+			<div class="col-md-4"></div>
+			<div class="col-md-4 mt-5 border rounded-lg shadow p-4 bg-light">
+				<h2 class="text-center mb-3">Sign up</h2>
+				<form action="/signup" method="post">
+					<input type="text" class="form-control mb-3 " name="uname" id="uname" placeholder="Name"required>
+					<input type="email" class="form-control mb-3 " name="uemail" id="uemail" placeholder="Email"required>
+					<input type="password" class="form-control mb-3" name="upassword" id="upassword" placeholder="Password"required>
+					<input type="password" class="form-control mb-3" id="upassword-confirm" placeholder="Confirm Password"required>
+					<input type="checkbox" class="mr-2 mb-3" required>Agree usage <a href="#">terms</a></input>
+					<input type="submit" class="btn btn-primary btn-block mb-3 shadow" id="submit" value="Sign up">
+				</form>
+			</div>
+			<div class="col-md-4"></div>
+		</div>
+	</div>
+</body>
+<script>
+	$( "form" ).submit(function( event ) {
+		const pass1 = $('#upassword').val();
+		const pass2 = $('#upassword-confirm').val();
+		if(pass1!=pass2){
+	  		event.preventDefault();
+	  		$('#upassword').val('');
+	  		$('#upassword-confirm').val('');
+	  		alert('Passwords dont match');
+		}
+		else if(pass1.length<4){
+			event.preventDefault();
+	  		$('#upassword').val('');
+	  		$('#upassword-confirm').val('');
+	  		alert('Password is too short');
+		}
+	});
+</script>
+</html>
