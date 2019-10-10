@@ -11,8 +11,10 @@
   "license": "ISC",
   "dependencies": {
     "body-parser": "^1.18.3",
+    "cookie-parser": "^1.4.4",
     "crypto": "^1.0.1",
     "express": "^4.16.4",
+    "express-session": "^1.16.2",
     "fstream": "^1.0.12",
     "mime": "^2.4.4",
     "multer": "^1.4.1",
