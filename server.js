@@ -7,6 +7,7 @@ const fs = require('fs');
 const rimraf = require("rimraf");
 // mysql connection to db
 const connectionPool = require('./connectdb');
+const transporter = require('./transporter');
 const cookieParser = require('cookie-parser'); // store cookie to clients machine
 const session = require('express-session'); // login confirmation
 // express app
@@ -34,6 +35,10 @@ const storeTime = '00:01:00';
 // file key length
 const keyLen = 4;
 const port = process.env.PORT || 3000;
+
+const emailSendingServer = 'wdevelopment125@gmail.com';
+
+const protocol = 'http://';
 
 // config parameters <------------------------------------------------
 
@@ -95,12 +100,14 @@ app.get('/signup', function(req, res) {
     res.sendFile(__dirname + '/statics/signup.html');  
 });
 
+
 app.post('/signup', function(req, res) {
 	const uname = req.body.uname;
 	const uemail = req.body.uemail.toLowerCase();
+	const upassword = req.body.upassword;
 	const salt = randHex(16);
-	const upasswordhash = crypto.createHash('sha256').update(salt+req.body.upassword).digest('hex');
-	const confirm_url = crypto.createHash('sha256').update(uemail).digest('hex');
+	const upasswordhash = crypto.createHash('sha256').update(salt+upassword).digest('hex');
+	const confirm_url = crypto.createHash('sha256').update(salt+uemail).digest('hex');
 	// check if email is already exist
 
 	checkEmail(uemail).then(function(result){
@@ -114,6 +121,25 @@ app.post('/signup', function(req, res) {
 			connectionPool.query(sql, function (err, result){
 				if (err) throw err;
 			});
+
+			let emailText = `Thank you for subscribing on Send me file.
+From now on you can use your email to login to our system.
+Just folow the link to confirm signup: ${protocol+req.headers.host+'/confirm/'+confirm_url}`;
+			var mailOptions = {
+			  from: emailSendingServer,
+			  to: uemail,
+			  subject: 'Welcome to Send me File',
+			  text: emailText 
+			};
+
+			transporter.sendMail(mailOptions, function(error, info){
+			  if (error) {
+			    console.log(error);
+			  } else {
+			    console.log('Email sent: ' + info.response);
+			  }
+			});
+
 			res.end('Welcome new user! Please confirm your email!');
 		}	
 		
@@ -123,6 +149,47 @@ app.post('/signup', function(req, res) {
 function checkEmail(email){
 	return new Promise(function(resolve, reject){
 		const sql = `select * from users where email='${email}'`;	
+		connectionPool.query(sql, function (err, result){
+		if (err){
+			return reject(err);
+		};
+		resolve(result);
+		});
+	});
+}
+
+
+app.get('/confirm/:token', (req, res)=>{
+	const token = req.params.token;
+	getUnconfirmedUser(token).then(function(result){
+		if(result.length>0){
+			// right token
+
+			// insert into users table
+			const insertSql = `insert into users(\`name\`, \`email\`,\`salt\`, \`password_hash\`) values('${result[0].name}','${result[0].email}','${result[0].salt}','${result[0].password_hash}')`;
+
+			connectionPool.query(insertSql, function (err, result){
+				if (err) throw err;
+			});
+
+			// delete from not confirmed table
+			const deleteSql = `delete from not_confirmed where confirm_url=\'${token}\'`;
+			
+			connectionPool.query(deleteSql, function (err, result){
+				if (err) throw err;
+			});
+			res.end('You have successfully confirmed your email address!');
+		}else{
+			// wrong toket
+			res.status(404);        // HTTP status 404: NotFound
+			res.sendFile(__dirname + '/statics/pagenotfound.html'); 
+		}
+	}).catch((err)=>setImmediate(()=>{throw err;}));
+});
+
+function getUnconfirmedUser(token){
+	return new Promise(function(resolve, reject){
+		const sql = `select * from not_confirmed where confirm_url=\'${token}\'`;	
 		connectionPool.query(sql, function (err, result){
 		if (err){
 			return reject(err);
