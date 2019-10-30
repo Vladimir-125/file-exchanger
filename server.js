@@ -4,12 +4,14 @@ const bodyParser= require('body-parser');
 const multer = require('multer');
 const fs = require('fs');
 // remove file directory
-const rimraf = require("rimraf");
+const rimraf = require('rimraf');
 // mysql connection to db
 const connectionPool = require('./connectdb');
 const transporter = require('./transporter');
 const cookieParser = require('cookie-parser'); // store cookie to clients machine
 const session = require('express-session'); // login confirmation
+// fix non-ASCII code file name problem
+var contentDisposition = require('content-disposition');
 // express app
 const app = express();
 
@@ -70,6 +72,7 @@ app.use(session({secret: "Secret key protecter string",
 }));
 
 var loginChecker = (req, res, next) => {
+	console.log(req.session.logged);
     if (!req.session.logged) {
         res.redirect('/');
     } else {
@@ -89,11 +92,11 @@ setInterval(function(){
 
 // root directory
 app.get('/', function(req, res) {
-    res.sendFile(__dirname + '/send-file.html');  
+    res.sendFile(__dirname + '/index.html');  
 });
 
 app.get('/secure', loginChecker, function(req, res) {
-    res.sendFile(__dirname + '/send-file-with-password.html');  
+    res.sendFile(__dirname + '/secure.html');  
 });
 
 app.get('/signup', function(req, res) {
@@ -140,7 +143,7 @@ Just folow the link to confirm signup: ${protocol+req.headers.host+'/confirm/'+c
 			  }
 			});
 
-			res.end('Welcome new user! Please confirm your email!');
+			res.sendFile(__dirname + './statics/signup-welcome.html');;
 		}	
 		
 	}).catch((err)=>setImmediate(()=>{throw err;}));
@@ -261,19 +264,9 @@ app.post('/uploadfile', upload.single('file'), (req, res, next) => {
 		const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
 		fdata.password_hash = hash;
   	}else{
-  		//encrypt encrypt and stores file
+  		//encrypt and stores file
   		storeBuffer(file.buffer, file.originalname, fdata);
   	}
-
-  	// TODO: return file object instead of simply putting it
-  	//const index = idDB.findIndex(obj => obj.file_id==id);
-
- //  	// redu id transfer method
-	// if(req.body.password){
-	// 	// get password hash
-	// 	const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
-	// 	fdata.password_hash = hash; 
-	// }
 
   	// insert in db
   	idDB.push(fdata);
@@ -285,7 +278,7 @@ app.post('/uploadfile', upload.single('file'), (req, res, next) => {
     // return download key and server store time
 	res.json({'key':fdata.file_id,'time':storeTime});
   }
-})
+});
 
 app.post('/validate', function(req, res) {
 	const req_key = req.body.key;
@@ -325,7 +318,6 @@ app.post('/download', function(req, res) {
     const passwd =  req.body.password;
     const index = idDB.findIndex(obj => obj.file_id == req_key);
     // if file exist, get index of the file
-    console.log('Entered download');
     if(index >= 0){
     	// if file id in db
     	if(idDB[index].password_hash != ''){
@@ -349,7 +341,6 @@ app.post('/download', function(req, res) {
     			}
     		}
     	}else{
-    		console.log('Start download');
     		// file does not has a password
     		var folder = './uploads/' + req_key;
 				fs.readdir(folder, (err, files) => {
@@ -527,9 +518,10 @@ function decrypt(file, password, res) {
 
 		var filename = path.basename(file);
 		var mimetype = mime.getType(file);
-
-		res.setHeader('Content-disposition', 'attachment; filename=' + filename);
+		// content disposition now will accept non-ascii file names as well
+		res.setHeader('Content-disposition', contentDisposition(filename));
 		res.setHeader('Content-type', mimetype);
+		
 
 		readStream
 		  	.pipe(decipher)
