@@ -5,7 +5,7 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 var transporter = nodemailer.createTransport(smtpTransport({
   service: 'gmail',
   auth: {
-    user: 'wdevelopment125@gmail.com',
+    user: process.env.EMAIL,
     pass: process.env.PASSWD
   }
 }));
