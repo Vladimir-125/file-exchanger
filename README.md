@@ -52,3 +52,5 @@ If no other settings were changed, the webpage is accessible on
 ```
 http://localhost:3000. 
 ```
+
+Check out [Demo](https://smf2.vladimir-125.repl.co "Open demo in new tab")
