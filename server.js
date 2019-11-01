@@ -143,7 +143,7 @@ Just folow the link to confirm signup: ${protocol+req.headers.host+'/confirm/'+c
 			  }
 			});
 
-			res.sendFile(__dirname + './statics/signup-welcome.html');;
+			res.sendFile(__dirname + '/statics/signup-welcome.html');;
 		}	
 		
 	}).catch((err)=>setImmediate(()=>{throw err;}));
