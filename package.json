@@ -23,7 +23,7 @@
     "nodemailer": "^6.3.1",
     "nodemailer-smtp-transport": "^2.7.4",
     "rimraf": "^2.6.3",
-    "tar": "^4.4.10"
+    "tar": "^4.4.15"
   },
   "devDependencies": {}
 }
