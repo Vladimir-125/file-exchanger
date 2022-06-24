@@ -1,11 +1,13 @@
-var mysql = require('mysql');
+const mysql = require('mysql');
+const dotenv = require('dotenv')
+dotenv.config()
 
-var con = mysql.createPool({
+const con = mysql.createPool({
 	connectionLimit : 50,
-  	host: "localhost",
-  	user: "root",
-  	password: "",
-  	database: "fexchange"
+  	host: process.env.MYSQL_HOST,
+  	user: process.env.MYSQL_USER,
+  	password: process.env.MYSQL_PASSWORD,
+  	database: process.env.MYSQL_DATABASE
 });
 
 module.exports = con;

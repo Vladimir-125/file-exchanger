@@ -31,9 +31,9 @@ var idDB = []; // local database
 
 const secInterval = 1;
 // file storage time
-const storeMinutes = 1;
-const storeHours = 0;
-const storeTime = '00:01:00';
+const storeMinutes = 0;
+const storeHours = 24;
+const storeTime = '24:00:00';
 // file key length
 const keyLen = 4;
 const port = process.env.PORT || 3000;
