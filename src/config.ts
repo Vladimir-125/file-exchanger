@@ -84,7 +84,10 @@ function parseTrustProxy(v: string | undefined): boolean | number | string {
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const e = schema.parse(env);
   const trustProxy = parseTrustProxy(e.TRUST_PROXY);
-  const baseUrl = e.BASE_URL ?? '';
+  const baseUrl = (e.BASE_URL ?? '').trim().replace(/\/+$/, '');
+  if (baseUrl !== '' && !/^https?:\/\/[^/\s]+/i.test(baseUrl)) {
+    throw new Error('BASE_URL must start with http:// or https://, e.g. BASE_URL=https://files.example.com');
+  }
   if (trustProxy !== false && baseUrl === '') {
     // links would otherwise be built from forwarded headers, which a client can set
     throw new Error('BASE_URL must be set when TRUST_PROXY is, e.g. BASE_URL=https://files.example.com');

@@ -104,3 +104,15 @@ test('limits are validated', () => {
   assert.equal(cfg({ KEY_LENGTH: '8' }).keyLength, 8);
   assert.throws(() => cfg({ CHUNK_MB: '200' }));
 });
+
+test('BASE_URL is trimmed and loses trailing slashes', () => {
+  assert.equal(cfg({ BASE_URL: ' https://files.example.com/ ' }).baseUrl, 'https://files.example.com');
+  assert.equal(cfg({ BASE_URL: 'https://files.example.com//' }).baseUrl, 'https://files.example.com');
+  assert.equal(cfg({ BASE_URL: 'https://x.test/app/' }).baseUrl, 'https://x.test/app');
+  assert.equal(cfg({ BASE_URL: '  ' }).baseUrl, '');
+});
+
+test('BASE_URL must be an http(s) URL', () => {
+  assert.throws(() => cfg({ BASE_URL: 'files.example.com' }), /BASE_URL/);
+  assert.throws(() => cfg({ BASE_URL: 'ftp://files.example.com' }), /BASE_URL/);
+});
