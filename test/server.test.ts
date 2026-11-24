@@ -6,19 +6,23 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { startServer } from '../src/server.ts';
 
-test('startServer serves the API and close() frees the port', async () => {
+test('startServer serves the API and close() frees the port', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fx-server-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const logs: string[] = [];
   const srv = await startServer(
     { PORT: '0', DATA_DIR: dir, APP_SECRET: 'ab'.repeat(32) },
-    { log: () => {} },
+    { log: (m) => logs.push(m) },
   );
   try {
     const res = await fetch(`${srv.url}/api/config`);
     assert.equal(res.status, 200);
-    assert.ok(typeof (await res.json()) === 'object');
+    assert.equal(((await res.json()) as { keyLength: number }).keyLength, 6);
+    assert.deepEqual(logs, [`Listening on ${srv.url}`]);
   } finally {
     await srv.close();
   }
+  await srv.close(); // idempotent
   const port = Number(new URL(srv.url).port);
   await assert.rejects(
     new Promise<void>((resolve, reject) => {
@@ -27,5 +31,4 @@ test('startServer serves the API and close() frees the port', async () => {
       s.once('error', reject);
     }),
   );
-  fs.rmSync(dir, { recursive: true, force: true });
 });
