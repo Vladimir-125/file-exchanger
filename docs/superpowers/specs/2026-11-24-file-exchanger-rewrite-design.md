@@ -46,7 +46,7 @@ be described as an alternative to, or compared with, any other product.
 | Accounts | Kept: signup + email confirmation + login. Password protection requires login. |
 | Direct transfer | Implemented: WebRTC data channel, signaling over WebSocket on the same server. |
 | Database | SQLite via Drizzle ORM (`better-sqlite3` driver, `drizzle-kit` migrations). |
-| Language | TypeScript, run directly by Node 22 (type stripping); `tsc --noEmit` for checks. |
+| Language | TypeScript, run directly with `tsx` (no build step); `tsc --noEmit` for checks. |
 | Desktop | Out of scope this round. |
 | Large uploads | Chunked (~50 MB pieces) so uploads pass Cloudflare's 100 MB per-request limit (server will sit behind cloudflared). |
 | Protected receive | Only the sender needs an account; receivers need key + password, no login. |
@@ -67,9 +67,8 @@ step), Sequelize (dated).
 
 ### Runtime and layout
 
-- Node ≥ 22.18 runs `.ts` directly. TypeScript limited to erasable syntax
-  (`erasableSyntaxOnly`): no enums, namespaces or parameter properties. Imports use
-  explicit `.ts` extensions (`allowImportingTsExtensions`, `verbatimModuleSyntax`).
+- `tsx` runs `.ts` directly (the local Node 22 build has no built-in type stripping).
+  Imports use explicit `.ts` extensions (`allowImportingTsExtensions`, `verbatimModuleSyntax`).
 - ESM (`"type": "module"`).
 - Express 5 for HTTP, `ws` for WebSocket, `zod` for request validation.
 
