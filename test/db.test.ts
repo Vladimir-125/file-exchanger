@@ -82,3 +82,44 @@ test('session store round-trips, expires and destroys', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('session store honours cookie.expires and touch extends expiry', async () => {
+  const dir = tmpDir();
+  try {
+    const { db, close } = openDb(dir);
+    let now = 1_000_000;
+    const store = new DrizzleSessionStore(db, () => now);
+    const get = (sid: string) =>
+      new Promise<SessionData | null | undefined>((res, rej) => store.get(sid, (e, s) => (e ? rej(e) : res(s))));
+
+    const short = { cookie: { originalMaxAge: 600_000, expires: new Date(now + 600_000).toISOString() } } as unknown as SessionData;
+    await new Promise<void>((res, rej) => store.set('short', short, (e) => (e ? rej(e) : res())));
+    now += 11 * 60_000;
+    assert.equal(await get('short'), null);
+
+    now = 1_000_000;
+    const plain = { cookie: { originalMaxAge: null } } as unknown as SessionData;
+    await new Promise<void>((res, rej) => store.set('t', plain, (e) => (e ? rej(e) : res())));
+    now += 40 * 60_000;
+    await new Promise<void>((res, rej) => store.touch('t', plain, (e) => (e ? rej(e) : res())));
+    now += 40 * 60_000; // 80 min after set, past the original 1 h expiry
+    assert.deepEqual(await get('t'), plain);
+    close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('session store does not call a throwing callback twice', () => {
+  const dir = tmpDir();
+  try {
+    const { db, close } = openDb(dir);
+    const store = new DrizzleSessionStore(db);
+    let calls = 0;
+    assert.throws(() => store.get('nope', () => { calls++; throw new Error('boom'); }), /boom/);
+    assert.equal(calls, 1);
+    close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
