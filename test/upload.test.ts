@@ -9,6 +9,7 @@ import { eq } from 'drizzle-orm';
 import { sessions, transfers } from '../src/db/schema.ts';
 import { HttpError } from '../src/errors.ts';
 import { decryptStream, deriveFileKey } from '../src/lib/crypto.ts';
+import { createTransferService } from '../src/services/transfers.ts';
 import { cookieJar, makeTestApp, postJson, type TestApp } from './helpers.ts';
 
 const MB = 2 ** 20;
@@ -211,6 +212,19 @@ describe('chunked uploads', () => {
       assert.equal((await a.put(c2, 0, 2, big.subarray(2 * MB))).status, 204);
       assert.equal((await a.complete(c2)).status, 200);
     });
+  });
+
+  it('after a restart every unfinished upload is upload_lost, protected or not', async () => {
+    const data = randomBytes(10);
+    const c = await a.created({ files: [{ name: 'b', size: data.length }] });
+    // a new service on the same database and files: what the server has after a restart
+    const restarted = createTransferService({ db: t.deps.db, config: t.deps.config, now: Date.now });
+    const lost = (err: unknown) => err instanceof HttpError && err.status === 409 && err.code === 'upload_lost';
+    await assert.rejects(
+      restarted.writeChunk(c.transferId, c.files[0]!.fileId, 0, c.uploadToken, Readable.from([data])),
+      lost,
+    );
+    await assert.rejects(restarted.complete(c.transferId, c.uploadToken), lost);
   });
 
   it('remove refuses an id that is not a UUID and deletes nothing', async () => {

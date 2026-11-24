@@ -65,7 +65,7 @@ All settings are environment variables, read from the process environment or a `
 
 ### Chunked upload
 
-Browsers upload each file in chunks of `CHUNK_MB` (default 50, at most 95), one request per chunk. This keeps every request below the 100 MB body limit of tunnels and proxies such as Cloudflare, so large files go through. Chunks are written straight to disk, and the server assembles nothing in memory.
+Browsers upload each file in chunks of `CHUNK_MB` (default 50, at most 95), one request per chunk. This keeps every request below the 100 MB body limit of tunnels and proxies such as Cloudflare, so large files go through. Chunks are written straight to disk, and the server assembles nothing in memory. Which chunks have arrived is only tracked in memory: if the server restarts during an upload, that upload answers `409 upload_lost` and has to be started again.
 
 ### ICE servers (direct transfers)
 
