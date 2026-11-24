@@ -92,6 +92,10 @@ Limits are per client IP and fixed in the code:
 | `upload` | 30 per hour | creating transfers |
 | `ws` | 30 per hour | hosting direct transfers over WebSocket |
 
+IPv6 clients are counted by `/56` prefix, so rotating addresses inside one prefix shares a single budget.
+
+Unfinished uploads reserve their declared size against `STORAGE_CAP_GB`. One client IP can have at most `MAX_TRANSFER_MB` reserved in unfinished uploads at a time; creating another transfer beyond that answers `429 too_many_uploads`. An unfinished upload is discarded `UPLOAD_ABANDON_MINUTES` after its last successfully written chunk (failed chunk requests do not count), and in any case `TRANSFER_TTL_HOURS` after it was created.
+
 ## Tests
 
 ```

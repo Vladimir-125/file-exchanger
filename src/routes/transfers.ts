@@ -63,7 +63,7 @@ export function transfersRouter(deps: Deps, limits: RateLimits): Router {
   const router = Router();
   router.post('/transfers', limits.upload, json, async (req, res) => {
     const body = createBody.parse(req.body);
-    const result = await transfers.create({ ...body, ownerId: req.session.userId });
+    const result = await transfers.create({ ...body, ownerId: req.session.userId, ip: req.ip });
     res.status(201).json(result);
   });
 

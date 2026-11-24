@@ -337,6 +337,42 @@ describe('storage cap', () => {
   });
 });
 
+describe('upload reservations per client IP', () => {
+  let t: TestApp;
+  before(async () => {
+    t = await makeTestApp({
+      configEnv: { CHUNK_MB: '1', MAX_TRANSFER_MB: '2', TRUST_PROXY: '1', BASE_URL: 'http://files.test' },
+    });
+  });
+  after(() => t.close());
+  /** fetch as a client behind the trusted proxy with this IP. */
+  const from =
+    (ip: string): Fetch =>
+    (url, init = {}) =>
+      fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), 'x-forwarded-for': ip } });
+
+  it('caps the bytes one IP has reserved in unfinished uploads at the transfer limit', async () => {
+    const one = api(t, from('198.51.100.1'));
+    const first = await one.created({ files: [{ name: 'a', size: 2 * MB }] });
+    const res = await one.create({ files: [{ name: 'b', size: 1 }] });
+    assert.equal(res.status, 429);
+    assert.equal(await errCode(res), 'too_many_uploads');
+    // another client is not affected
+    await api(t, from('198.51.100.2')).created({ files: [{ name: 'c', size: 2 * MB }] });
+    // finishing (here: removing) the first upload frees the reservation
+    await t.deps.transfers.remove(first.transferId);
+    await one.created({ files: [{ name: 'b', size: 1 }] });
+  });
+
+  it('counts IPv6 clients by prefix, so rotating addresses inside it does not help', async () => {
+    await api(t, from('2001:db8:0:1::1')).created({ files: [{ name: 'a', size: 2 * MB }] });
+    const res = await api(t, from('2001:db8:0:2::9')).create({ files: [{ name: 'b', size: 1 }] });
+    assert.equal(res.status, 429);
+    assert.equal(await errCode(res), 'too_many_uploads');
+    await api(t, from('2001:db8:1:1::1')).created({ files: [{ name: 'c', size: 1 }] }); // another /56
+  });
+});
+
 describe('expiry and cleanup', () => {
   const HOUR = 3600_000;
   let now = Date.parse('2026-01-01T00:00:00Z');
@@ -375,6 +411,20 @@ describe('expiry and cleanup', () => {
     assert.equal(await t.deps.transfers.cleanup(), 2); // the ready one and the now-abandoned fresh one
     assert.equal(fs.existsSync(dirOf(t, ready.transferId)), false);
     assert.equal(t.deps.db.select().from(transfers).all().length, 0);
+  });
+
+  it('failing chunk PUTs do not keep an upload alive', async () => {
+    const c = await a.created({ files: [{ name: 'b', size: MB + 1 }] });
+    assert.equal((await a.put(c, 0, 0, randomBytes(MB))).status, 204);
+    for (let i = 0; i < 3; i++) {
+      now += 25 * 60_000;
+      const res = await a.put(c, 0, 0, randomBytes(1)); // short_chunk
+      assert.equal(res.status, 400);
+      assert.equal(await errCode(res), 'short_chunk');
+    }
+    // 75 min since the last chunk that was written, 0 min since the last failed one
+    assert.equal(await t.deps.transfers.cleanup(), 1);
+    assert.equal(fs.existsSync(dirOf(t, c.transferId)), false);
   });
 
   it('keeps an upload that is still sending chunks, but never past the transfer TTL', async () => {

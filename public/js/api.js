@@ -86,6 +86,7 @@ const FRIENDLY = {
   network: 'Could not reach the server. Check your connection.',
   rate_limited: 'Too many requests right now. Please wait a few minutes and try again.',
   storage_full: 'The server is out of storage space right now. Please try again later.',
+  too_many_uploads: 'You already have uploads in progress. Let them finish and try again.',
   auth_required: 'Please sign in first.',
   not_found: 'Nothing found for this key. It may have expired.',
   wrong_password: 'Wrong password.',
