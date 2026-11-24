@@ -17,42 +17,38 @@ These instructions will get you a copy of the project up and running on your loc
 
 ### Prerequisites
 
-
-```
-1.	NPM v6.12.0^ should be preinstalled
-2.	Node v9.5.0^ should be preinstalled
-3.	MySQL v5.5.53^ should be preinstalled
-```
+- Node.js 18+ and npm
+- MySQL 8 (or Docker to run it in a container)
 
 ### Installing
-Copy the file-exchanger folder on your computer by running
+
 ```
 git clone https://github.com/Vladimir-125/file-exchanger
-```
-
-If node_modules folder does not exist in the project folder open cmd in current directory and run the following code: 
-```
+cd file-exchanger
 npm install
-``` 
-It will install all libraries specified in package.json file.
+cp .env.example .env   # then edit the values
+```
 
-- Start MySQL server
-- Create a MySQL database with provided MySQL code
-- Modify file connectdb.js and enter there your database host name (usually localhost), user name, password, and database name where you have created tables from the MySQL code.
-- Create new or use existing (not recommended) Gmail account.
-- Go to security settings and allow less secure app access.
-- Modify transporter.js file and enter there your Gmail email and your password.
-- For the best practice I am storing password in environment variable by typing in cmd: set PASSWD=you_password and set EMAIL=you_email
-- Run 
-```
-node server.js
-``` 
-command in cmd to start server.
+Start MySQL and load the schema. With Docker:
 
-The server usually starts on the port number 3000
-If no other settings were changed, the webpage is accessible on 
 ```
-http://localhost:3000. 
+docker run -d --name file-exchanger-mysql -p 127.0.0.1:3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=fileexchanger \
+  -e MYSQL_USER=fileexchanger -e MYSQL_PASSWORD=change-me \
+  -v "$PWD/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro" mysql:8.0
 ```
+
+Or against an existing server: `mysql -u <user> -p <database> < schema.sql`.
+
+For signup confirmation emails, set `EMAIL` and `PASSWD` in `.env` to a Gmail
+address and an [app password](https://myaccount.google.com/apppasswords).
+
+Run the server:
+
+```
+npm start
+```
+
+The app listens on `PORT` from `.env` (default 3000): http://localhost:3000
 
 Check out [Demo](http://13.125.60.5/ "Open demo in new tab")
