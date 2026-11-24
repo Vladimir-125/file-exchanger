@@ -9,6 +9,7 @@ import { errorMiddleware } from './errors.ts';
 import { createRateLimits, type RateLimits } from './middleware/rateLimits.ts';
 import { authRouters } from './routes/auth.ts';
 import { configRouter } from './routes/config.ts';
+import { meRouter } from './routes/me.ts';
 import { transfersRouter } from './routes/transfers.ts';
 import type { Mailer } from './services/mailer.ts';
 import type { TransferService } from './services/transfers.ts';
@@ -38,7 +39,7 @@ export function createApp(deps: Deps, limits: RateLimits = createRateLimits()): 
   // JSON parsing is applied per route (not globally) so routers can take raw bodies.
   // To add a router: one more entry in `api`.
   const auth = authRouters(deps, limits);
-  const api = [configRouter(deps), auth.api, transfersRouter(deps, limits)];
+  const api = [configRouter(deps), auth.api, meRouter(deps), transfersRouter(deps, limits)];
   app.use('/api', ...api);
   app.use('/api', (_req, res) => {
     res.status(404).json({ error: { code: 'not_found', message: 'Not found' } });

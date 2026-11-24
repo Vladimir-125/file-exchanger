@@ -1,8 +1,11 @@
-import express, { Router, type Request } from 'express';
+import { pipeline, type Readable } from 'node:stream';
+import express, { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import type { Deps } from '../app.ts';
 import { HttpError } from '../errors.ts';
+import { requireUser } from '../middleware/auth.ts';
 import type { RateLimits } from '../middleware/rateLimits.ts';
+import type { TransferRecord } from '../services/transfers.ts';
 
 const createBody = z.object({
   // the real count limit is config.maxFilesPerTransfer, checked by the service (too_many_files)
@@ -16,7 +19,33 @@ const completeBody = z.object({
   liveKey: z.string().max(64).optional(),
   liveToken: z.string().max(200).optional(),
 });
+const unlockBody = z.object({ password: z.string().min(1).max(200) });
 const INDEX = /^\d{1,9}$/;
+const SIMPLE_MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
+
+const notFound = () => new HttpError(404, 'not_found', 'Transfer not found');
+const grantOf = (req: Request) => (typeof req.query.grant === 'string' ? req.query.grant : undefined);
+
+/** Headers every download carries: always an attachment, never sniffed or cached. */
+function downloadHeaders(res: Response, name: string, type: string) {
+  res.attachment(name);
+  res.set({
+    'Content-Type': SIMPLE_MIME.test(type) ? type : 'application/octet-stream',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, no-store',
+  });
+}
+
+/**
+ * Pipes a download to the client. On any stream error (tampered or truncated file, client gone)
+ * the response is destroyed, never ended, so a broken download cannot look complete. Errors are
+ * not logged: aborts and auth failures are expected traffic here.
+ */
+function send(src: Readable, res: Response) {
+  pipeline(src, res, (err) => {
+    if (err) res.destroy();
+  });
+}
 
 const tokenOf = (req: Request) => req.get('x-upload-token') ?? '';
 
@@ -61,6 +90,45 @@ export function transfersRouter(deps: Deps, limits: RateLimits): Router {
       baseUrl: baseUrlOf(req),
     });
     res.json(ready);
+  });
+
+  const ready = async (req: Request): Promise<TransferRecord> => {
+    const record = await transfers.findReady(String(req.params.key));
+    if (!record) throw notFound();
+    return record;
+  };
+
+  router.get('/transfers/:key', limits.lookup, async (req, res) => {
+    res.json(transfers.view(await ready(req), grantOf(req)));
+  });
+
+  router.post('/transfers/:key/unlock', limits.lookup, json, async (req, res) => {
+    const { password } = unlockBody.parse(req.body);
+    const grant = await transfers.unlock(String(req.params.key), password);
+    res.json({ grant, files: transfers.view(await ready(req), grant).files });
+  });
+
+  router.get('/transfers/:key/files/:fileId', async (req, res) => {
+    const record = await ready(req);
+    const file = await transfers.openFile(record, String(req.params.fileId), grantOf(req));
+    downloadHeaders(res, file.name, file.mime);
+    // a decrypted stream has no length known up front; a plain file's size is exact
+    if (record.transfer.passwordHash === null) res.set('Content-Length', String(file.size));
+    send(file.stream, res);
+  });
+
+  router.get('/transfers/:key/zip', async (req, res) => {
+    const record = await ready(req);
+    const zip = transfers.openZip(record, grantOf(req));
+    downloadHeaders(res, `${record.transfer.key}.zip`, 'application/zip');
+    // keys are plain alphanumerics; quoted exactly as clients expect
+    res.set('Content-Disposition', `attachment; filename="${record.transfer.key}.zip"`);
+    send(zip, res);
+  });
+
+  router.delete('/transfers/:key', requireUser, async (req, res) => {
+    await transfers.removeOwned(String(req.params.key), req.session.userId!);
+    res.status(204).end();
   });
 
   return router;

@@ -4,14 +4,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { and, asc, eq, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import type { Config } from '../config.ts';
 import type { Db } from '../db/client.ts';
 import { sessions, transferFiles, transfers, type Transfer, type TransferFile } from '../db/schema.ts';
 import { HttpError } from '../errors.ts';
-import { deriveFileKey, encryptFile, hashPassword, newSaltHex, randomToken, sha256Hex } from '../lib/crypto.ts';
+import {
+  deriveFileKey, encryptFile, hashPassword, newSaltHex, openGrant, randomToken, sealGrant, sha256Hex, verifyPassword,
+} from '../lib/crypto.ts';
 import { safeDisplayName } from '../lib/fileName.ts';
 import { generateKey, normalizeKey } from '../lib/keys.ts';
+import { openStored, uniqueNames, zipStream } from './downloads.ts';
 
 /** Implemented by the WebRTC signaling hub (Task 8). */
 export type Signaling = {
@@ -25,11 +28,14 @@ export type PublicFile = { fileId: string; name: string; size: number };
 export type CreateResult = { transferId: string; uploadToken: string; chunkBytes: number; files: PublicFile[] };
 export type ReadyTransfer = { key: string; url: string; expiresAt: number; protected: boolean; files: PublicFile[] };
 export type TransferRecord = { transfer: Transfer; files: TransferFile[] };
+export type TransferView = { key: string; expiresAt: number; protected: boolean; files: PublicFile[] | null };
+export type OpenedFile = { name: string; size: number; mime: string; stream: Readable };
 export type CompleteOpts = { liveKey?: string; liveToken?: string; baseUrl?: string };
 export type TransferService = ReturnType<typeof createTransferService>;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_MIME = 100;
+const GRANT_MS = 15 * 60_000;
 
 /** Per-upload state that only lives in memory: lost on restart, so such uploads cannot complete. */
 type UploadState = {
@@ -43,8 +49,12 @@ type UploadState = {
 const notFound = () => new HttpError(404, 'not_found', 'Transfer not found');
 const incomplete = () => new HttpError(409, 'incomplete', 'Not every file has been fully uploaded');
 const notUploading = () => new HttpError(409, 'not_uploading', 'Transfer is not accepting uploads');
+const passwordRequired = () => new HttpError(401, 'password_required', 'This transfer needs its password');
 const uploadLost = () =>
   new HttpError(409, 'upload_lost', 'The server restarted during this upload; start a new transfer');
+
+const publicFiles = (files: TransferFile[]): PublicFile[] =>
+  files.map((f) => ({ fileId: f.id, name: f.originalName, size: f.size }));
 
 function tokenMatches(token: string, storedHash: string): boolean {
   const a = Buffer.from(sha256Hex(token));
@@ -85,6 +95,47 @@ export function createTransferService({
       uploads.set(row.id, state);
     }
     return state;
+  }
+
+  const urlOf = (key: string, baseUrl?: string) => `${baseUrl ?? config.baseUrl}/${key}`;
+  const filePath = (file: TransferFile) => path.join(dirOf(file.transferId), file.storedName);
+
+  function filesOf(transferId: string): TransferFile[] {
+    return db
+      .select()
+      .from(transferFiles)
+      .where(eq(transferFiles.transferId, transferId))
+      .orderBy(asc(transferFiles.position))
+      .all();
+  }
+
+  /**
+   * The file key a grant opens for this transfer: null for an unprotected transfer, undefined when
+   * the grant is missing, invalid, expired or issued for another transfer.
+   */
+  function grantedKey(record: TransferRecord, grant: string | undefined): Buffer | null | undefined {
+    if (record.transfer.passwordHash === null) return null;
+    if (!grant) return undefined;
+    const opened = openGrant(grant, config.appSecret, now());
+    return opened?.transferId === record.transfer.id ? opened.fileKey : undefined;
+  }
+
+  function requireKey(record: TransferRecord, grant: string | undefined): Buffer | null {
+    const key = grantedKey(record, grant);
+    if (key === undefined) throw passwordRequired();
+    return key;
+  }
+
+  async function findReady(input: string): Promise<TransferRecord | null> {
+    const key = normalizeKey(input, config.keyLength);
+    if (!key) return null;
+    const transfer = db
+      .select()
+      .from(transfers)
+      .where(and(eq(transfers.key, key), eq(transfers.status, 'ready')))
+      .get();
+    if (!transfer || transfer.expiresAt.getTime() <= now()) return null;
+    return { transfer, files: filesOf(transfer.id) };
   }
 
   async function remove(transferId: string): Promise<void> {
@@ -255,12 +306,7 @@ export function createTransferService({
       if (!state || (row.passwordHash && state.password === undefined)) throw uploadLost();
       if (state.completing) throw notUploading();
       if (state.inflight > 0) throw incomplete();
-      const files = db
-        .select()
-        .from(transferFiles)
-        .where(eq(transferFiles.transferId, transferId))
-        .orderBy(asc(transferFiles.position))
-        .all();
+      const files = filesOf(transferId);
       for (const f of files) {
         const got = state.received.get(f.id);
         for (let i = 0; i < chunkCount(f.size); i++) if (!got?.has(i)) throw incomplete();
@@ -305,35 +351,91 @@ export function createTransferService({
 
       return {
         key,
-        url: `${opts.baseUrl ?? config.baseUrl}/${key}`,
+        url: urlOf(key, opts.baseUrl),
         expiresAt,
         protected: row.passwordHash !== null,
-        files: files.map((f) => ({ fileId: f.id, name: f.originalName, size: f.size })),
+        files: publicFiles(files),
       };
     },
 
-    async findReady(input: string): Promise<TransferRecord | null> {
-      const key = normalizeKey(input, config.keyLength);
-      if (!key) return null;
-      const transfer = db
+    findReady,
+
+    /** Public metadata; a protected transfer lists its files only with a valid grant. */
+    view(record: TransferRecord, grant?: string): TransferView {
+      const { transfer, files } = record;
+      return {
+        key: transfer.key!,
+        expiresAt: transfer.expiresAt.getTime(),
+        protected: transfer.passwordHash !== null,
+        files: grantedKey(record, grant) === undefined ? null : publicFiles(files),
+      };
+    },
+
+    /** Checks the password, then issues a stateless grant carrying the file key (15 min). */
+    async unlock(key: string, password: string): Promise<string> {
+      const record = await findReady(key);
+      if (!record) throw notFound();
+      const { transfer } = record;
+      if (transfer.passwordHash === null || transfer.encSalt === null) {
+        throw new HttpError(400, 'not_protected', 'This transfer has no password');
+      }
+      // verify first: deriving the file key from a wrong password would only waste work
+      if (!(await verifyPassword(password, transfer.passwordHash))) {
+        throw new HttpError(401, 'wrong_password', 'Wrong password');
+      }
+      const fileKey = await deriveFileKey(password, transfer.encSalt);
+      return sealGrant({ transferId: transfer.id, fileKey, exp: now() + GRANT_MS }, config.appSecret);
+    },
+
+    /** Opens one file for download (decrypting a protected one); needs a grant when protected. */
+    async openFile(record: TransferRecord, fileId: string, grant?: string): Promise<OpenedFile> {
+      const file = record.files.find((f) => f.id === fileId);
+      if (!file) throw notFound();
+      const fileKey = requireKey(record, grant);
+      const stream = await openStored(filePath(file), fileKey);
+      return { name: file.originalName, size: file.size, mime: file.mime, stream };
+    },
+
+    /** A stored zip of every file under unique display names; needs a grant when protected. */
+    openZip(record: TransferRecord, grant?: string): Readable {
+      const fileKey = requireKey(record, grant);
+      const names = uniqueNames(record.files.map((f) => f.originalName));
+      return zipStream(record.files.map((f, i) => ({ name: names[i]!, open: () => openStored(filePath(f), fileKey) })));
+    },
+
+    /** The owner's ready, unexpired transfers, newest first. */
+    async listForOwner(ownerId: number, baseUrl?: string): Promise<ReadyTransfer[]> {
+      const rows = db
         .select()
         .from(transfers)
-        .where(and(eq(transfers.key, key), eq(transfers.status, 'ready')))
-        .get();
-      if (!transfer || transfer.expiresAt.getTime() <= now()) return null;
-      const files = db
+        .where(and(eq(transfers.ownerId, ownerId), eq(transfers.status, 'ready'), gt(transfers.expiresAt, new Date(now()))))
+        .orderBy(desc(transfers.expiresAt), desc(transfers.createdAt))
+        .all();
+      if (rows.length === 0) return [];
+      const allFiles = db
         .select()
         .from(transferFiles)
-        .where(eq(transferFiles.transferId, transfer.id))
+        .where(inArray(transferFiles.transferId, rows.map((r) => r.id)))
         .orderBy(asc(transferFiles.position))
         .all();
-      return { transfer, files };
+      return rows.map((t) => ({
+        key: t.key!,
+        url: urlOf(t.key!, baseUrl),
+        expiresAt: t.expiresAt.getTime(),
+        protected: t.passwordHash !== null,
+        files: publicFiles(allFiles.filter((f) => f.transferId === t.id)),
+      }));
+    },
+
+    /** Deletes a ready transfer; anyone but its owner gets 404 so keys of others are not confirmed. */
+    async removeOwned(key: string, ownerId: number): Promise<void> {
+      const record = await findReady(key);
+      if (!record || record.transfer.ownerId !== ownerId) throw notFound();
+      await remove(record.transfer.id);
     },
 
     /** Absolute path of a ready file on disk. */
-    filePath(file: TransferFile): string {
-      return path.join(dirOf(file.transferId), file.storedName);
-    },
+    filePath,
 
     remove,
 
