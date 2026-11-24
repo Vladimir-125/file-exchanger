@@ -42,7 +42,7 @@ export async function makeTestApp(
     now,
     transfers: createTransferService({ db, config, now }),
   };
-  const big = { auth: 1e6, lookup: 1e6, upload: 1e6, ws: 1e6 };
+  const big = { auth: 1e6, lookup: 1e6, miss: 1e6, upload: 1e6, ws: 1e6 };
   const app = createApp(deps, createRateLimits({ ...big, ...opts.rateLimits }));
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

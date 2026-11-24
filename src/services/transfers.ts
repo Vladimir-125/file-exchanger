@@ -372,7 +372,7 @@ export function createTransferService({
     },
 
     /** Checks the password, then issues a stateless grant carrying the file key (15 min). */
-    async unlock(key: string, password: string): Promise<string> {
+    async unlock(key: string, password: string): Promise<{ grant: string; files: PublicFile[] }> {
       const record = await findReady(key);
       if (!record) throw notFound();
       const { transfer } = record;
@@ -384,7 +384,8 @@ export function createTransferService({
         throw new HttpError(401, 'wrong_password', 'Wrong password');
       }
       const fileKey = await deriveFileKey(password, transfer.encSalt);
-      return sealGrant({ transferId: transfer.id, fileKey, exp: now() + GRANT_MS }, config.appSecret);
+      const grant = sealGrant({ transferId: transfer.id, fileKey, exp: now() + GRANT_MS }, config.appSecret);
+      return { grant, files: publicFiles(record.files) };
     },
 
     /** Opens one file for download (decrypting a protected one); needs a grant when protected. */
