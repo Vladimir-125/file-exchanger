@@ -88,7 +88,7 @@ Limits are per client IP and fixed in the code:
 | --- | --- | --- |
 | `auth` | 20 per 15 min | sign-up and login |
 | `lookup` | 60 per minute | transfer lookups and unlock attempts |
-| `miss` | 30 failed requests per 15 min | any route taking a transfer key, and failed WebSocket joins; stops key guessing |
+| `miss` | 30 failed requests per 15 min | any route taking a transfer key; stops key guessing. WebSocket joins on unknown keys have their own counter with the same limit (a join on a stored key does not count) |
 | `upload` | 30 per hour | creating transfers |
 | `ws` | 30 per hour | hosting direct transfers over WebSocket |
 

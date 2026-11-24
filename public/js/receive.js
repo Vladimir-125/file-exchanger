@@ -106,8 +106,8 @@ function joinLive(key) {
       setText('receive-status', '');
       setText('receive-error', 'Someone else is already receiving these files. Ask the sender to start again.');
     } else {
-      // not-live, not-found, any error (rate_limited too: the server counts stored opens as join
-      // misses), or the socket failed: the HTTP lookup decides and reports its own 404/429
+      // not-live, not-found, any error (rate_limited too) or the socket failed: the HTTP lookup
+      // decides and reports its own 404/429
       fallBack();
     }
   });

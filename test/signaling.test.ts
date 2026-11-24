@@ -399,9 +399,13 @@ test('join misses are limited per client IP and close the socket', async (t) => 
   const c = await connect(t, a, ipA);
   c.send({ type: 'join', key: 'nope' });
   await c.next('not-found');
-  c.send({ type: 'join', key: stored });
-  await c.next('not-live');
+  for (let i = 0; i < 5; i++) {
+    c.send({ type: 'join', key: stored }); // a stored key is a hit, like a successful HTTP lookup
+    await c.next('not-live');
+  }
   c.send({ type: 'join', key: live.key === '222222' ? '333333' : '222222' });
+  await c.next('not-found');
+  c.send({ type: 'join', key: 'nope' });
   await c.next('not-found');
   c.send({ type: 'join', key: live.key });
   assert.equal((await c.next('error')).code, 'rate_limited');
@@ -414,6 +418,28 @@ test('join misses are limited per client IP and close the socket', async (t) => 
   const b = await connect(t, a, ipB);
   b.send({ type: 'join', key: other.key });
   await b.next('joined');
+});
+
+test('IPv6 clients share one join-miss and host budget per /56 prefix', async (t) => {
+  const a = await app(t, { configEnv: { TRUST_PROXY: '1' }, rateLimits: { miss: 2, ws: 1 } });
+  const first = await connect(t, a, { 'x-forwarded-for': '2001:db8:0:1::1' });
+  first.send({ type: 'join', key: 'nope' });
+  await first.next('not-found');
+  first.send({ type: 'join', key: 'nope' });
+  await first.next('not-found');
+  const rotated = await connect(t, a, { 'x-forwarded-for': '2001:db8:0:ff::2' }); // same /56
+  rotated.send({ type: 'join', key: 'nope' });
+  assert.equal((await rotated.next('error')).code, 'rate_limited');
+  const elsewhere = await connect(t, a, { 'x-forwarded-for': '2001:db8:1::1' }); // another /56
+  elsewhere.send({ type: 'join', key: 'nope' });
+  await elsewhere.next('not-found');
+
+  const h1 = await connect(t, a, { 'x-forwarded-for': '2001:db8:2:1::1' });
+  h1.send({ type: 'host' });
+  await h1.next('hosted');
+  const h2 = await connect(t, a, { 'x-forwarded-for': '2001:db8:2:2::1' });
+  h2.send({ type: 'host' });
+  assert.equal((await h2.next('error')).code, 'rate_limited');
 });
 
 test('a failed fallback complete releases its claim on the live key', async (t) => {
