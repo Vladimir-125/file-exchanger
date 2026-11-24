@@ -173,14 +173,21 @@ describe('chunked uploads', () => {
     const big = randomBytes(2.5 * MB);
     const c = await a.created({ files: [{ name: 'b', size: big.length }] });
     await uploadAll(a, c, [big.subarray(0, 2 * MB)]); // chunks 0 and 1
-    const body = Readable.from([randomBytes(0.4 * MB), randomBytes(0.4 * MB)]);
+    const part = path.join(dirOf(t, c.transferId), `${c.files[0]!.fileId}.part`);
+    // chunk 2 takes 0.5 MB: the first 400 kB fit and are on disk before the overflowing 400 kB arrive
+    const body = Readable.from(
+      (async function* () {
+        yield randomBytes(400_000);
+        while (fs.statSync(part).size < 2 * MB + 400_000) await new Promise((r) => setTimeout(r, 5));
+        yield randomBytes(400_000);
+      })(),
+    );
     await assert.rejects(
       t.deps.transfers.writeChunk(c.transferId, c.files[0]!.fileId, 2, c.uploadToken, body),
       (err) => err instanceof HttpError && err.status === 413 && err.code === 'chunk_too_large',
     );
     assert.ok(body.destroyed);
-    const part = path.join(dirOf(t, c.transferId), `${c.files[0]!.fileId}.part`);
-    assert.ok(fs.statSync(part).size <= big.length);
+    assert.equal(fs.statSync(part).size, 2 * MB + 400_000); // the overflowing piece is not written at all
     const res = await a.complete(c);
     assert.equal(res.status, 409);
     assert.equal(await errCode(res), 'incomplete');
@@ -206,18 +213,35 @@ describe('chunked uploads', () => {
     });
   });
 
+  it('remove refuses an id that is not a UUID and deletes nothing', async () => {
+    const c = await a.created({ files: [{ name: 'b', size: 1 }] });
+    for (const id of ['..', '../..', `${c.transferId}/..`]) {
+      await assert.rejects(t.deps.transfers.remove(id), (err) => err instanceof HttpError && err.code === 'not_found');
+    }
+    assert.ok(fs.existsSync(path.join(t.deps.config.dataDir, 'app.db')));
+    assert.ok(fs.existsSync(dirOf(t, c.transferId)));
+  });
+
   it('a client that disconnects mid-chunk does not break the server', async () => {
     const c = await a.created({ files: [{ name: 'b', size: MB }] });
     const url = new URL(`${t.base}/api/transfers/${c.transferId}/files/${c.files[0]!.fileId}/chunks/0`);
-    await new Promise<void>((resolve) => {
-      const req = http.request(url, {
-        method: 'PUT',
-        headers: { 'x-upload-token': c.uploadToken, 'content-length': String(MB) },
+    const logged: unknown[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+    try {
+      await new Promise<void>((resolve) => {
+        const req = http.request(url, {
+          method: 'PUT',
+          headers: { 'x-upload-token': c.uploadToken, 'content-length': String(MB) },
+        });
+        req.on('error', () => resolve());
+        req.write(randomBytes(100_000), () => setTimeout(() => (req.destroy(), resolve()), 50));
       });
-      req.on('error', () => resolve());
-      req.write(randomBytes(100_000), () => setTimeout(() => (req.destroy(), resolve()), 50));
-    });
-    await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      console.error = origError;
+    }
+    assert.deepEqual(logged, [], 'a disconnect is not a server error');
     const res = await a.complete(c);
     assert.equal(res.status, 409);
     assert.equal(await errCode(res), 'incomplete');
@@ -350,6 +374,26 @@ describe('expiry and cleanup', () => {
     assert.equal(await t.deps.transfers.findReady(done.key), null);
     assert.equal(await t.deps.transfers.cleanup(), 2); // the ready one and the now-abandoned fresh one
     assert.equal(fs.existsSync(dirOf(t, ready.transferId)), false);
+    assert.equal(t.deps.db.select().from(transfers).all().length, 0);
+  });
+
+  it('keeps an upload that is still sending chunks, but never past the transfer TTL', async () => {
+    const created = now;
+    const c = await a.created({ files: [{ name: 'b', size: MB + 1 }] });
+    assert.equal((await a.put(c, 0, 0, randomBytes(MB))).status, 204);
+    const tick = async () => assert.equal((await a.put(c, 0, 1, randomBytes(1))).status, 204);
+
+    now += 59 * 60_000;
+    await tick();
+    now += 2 * 60_000; // 61 min since create, 2 min since the last chunk
+    assert.equal(await t.deps.transfers.cleanup(), 0);
+    assert.ok(fs.existsSync(dirOf(t, c.transferId)));
+
+    now = created + 24 * HOUR - 60_000;
+    await tick(); // still active, but the reservation cannot be held forever
+    now = created + 24 * HOUR;
+    assert.equal(await t.deps.transfers.cleanup(), 1);
+    assert.equal(fs.existsSync(dirOf(t, c.transferId)), false);
     assert.equal(t.deps.db.select().from(transfers).all().length, 0);
   });
 });

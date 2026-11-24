@@ -88,6 +88,7 @@ export function createTransferService({
   }
 
   async function remove(transferId: string): Promise<void> {
+    if (!UUID.test(transferId)) throw notFound(); // never let an id reach a recursive rm
     await fs.rm(dirOf(transferId), { recursive: true, force: true });
     db.delete(transfers).where(eq(transfers.id, transferId)).run();
     uploads.delete(transferId);
@@ -223,7 +224,10 @@ export function createTransferService({
       });
       const out = createWriteStream(path.join(dirOf(transferId), `${file.storedName}.part`), { flags: 'r+', start });
       let fsError: unknown;
-      out.on('error', (err) => (fsError ??= err));
+      // pipeline also destroys `out` with the body's error (client gone); only real fs errors carry a syscall
+      out.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.syscall) fsError ??= err;
+      });
 
       const chunks = state.received.get(fileId) ?? new Set<number>();
       state.received.set(fileId, chunks);
@@ -264,6 +268,8 @@ export function createTransferService({
 
       state.completing = true; // blocks new chunks and a second complete while files are finalised
       const dir = dirOf(transferId);
+      let key: string;
+      let expiresAt: number;
       try {
         for (const f of files) {
           const size = await fs.stat(path.join(dir, `${f.storedName}.part`)).then((s) => s.size, () => -1);
@@ -280,21 +286,21 @@ export function createTransferService({
             await fs.rename(part, final);
           }
         }
+
+        // key generation and the update are synchronous, so no other transfer can take the key meanwhile
+        const isTaken = (k: string) =>
+          signaling?.isLive(k) === true ||
+          db.select({ id: transfers.id }).from(transfers).where(eq(transfers.key, k)).get() !== undefined;
+        key = generateKey(config.keyLength, isTaken);
+        expiresAt = now() + config.transferTtlMs; // the TTL counts from when the files become available
+        db.update(transfers)
+          .set({ status: 'ready', key, expiresAt: new Date(expiresAt) })
+          .where(eq(transfers.id, transferId))
+          .run();
       } catch (err) {
-        state.completing = false;
+        state.completing = false; // otherwise cleanup would skip this transfer forever
         throw err;
       }
-
-      // key generation and the update are synchronous, so no other transfer can take the key meanwhile
-      const isTaken = (key: string) =>
-        signaling?.isLive(key) === true ||
-        db.select({ id: transfers.id }).from(transfers).where(eq(transfers.key, key)).get() !== undefined;
-      const key = generateKey(config.keyLength, isTaken);
-      const expiresAt = now() + config.transferTtlMs; // the TTL counts from when the files become available
-      db.update(transfers)
-        .set({ status: 'ready', key, expiresAt: new Date(expiresAt) })
-        .where(eq(transfers.id, transferId))
-        .run();
       uploads.delete(transferId);
 
       return {
@@ -334,8 +340,10 @@ export function createTransferService({
     async cleanup(): Promise<number> {
       const t = now();
       const abandonedBefore = new Date(t - config.uploadAbandonMs);
+      // hard ceiling: an upload cannot hold its storage reservation longer than a ready transfer lives
+      const tooOld = t - config.transferTtlMs;
       const due = db
-        .select({ id: transfers.id })
+        .select({ id: transfers.id, createdAt: transfers.createdAt })
         .from(transfers)
         .where(
           or(
@@ -344,10 +352,13 @@ export function createTransferService({
           ),
         )
         .all()
-        .filter(({ id }) => {
-          // a long upload that is still sending chunks is not abandoned
+        .filter(({ id, createdAt }) => {
           const state = uploads.get(id);
-          return !state || (state.inflight === 0 && !state.completing && state.lastActivity <= abandonedBefore.getTime());
+          if (!state) return true;
+          if (state.completing) return false; // finalising; the row turns ready (or completing resets) shortly
+          if (createdAt.getTime() <= tooOld) return true;
+          // a long upload that is still sending chunks is not abandoned
+          return state.inflight === 0 && state.lastActivity <= abandonedBefore.getTime();
         });
       for (const { id } of due) await remove(id);
       db.delete(sessions).where(lte(sessions.expiresAt, new Date(t))).run();
