@@ -4,6 +4,7 @@ import type { Duplex } from 'node:stream';
 import proxyAddr from 'proxy-addr';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import type { Config } from '../config.ts';
+import { WINDOWS } from '../middleware/rateLimits.ts';
 import { randomToken, sha256Hex } from '../lib/crypto.ts';
 import { generateKey, normalizeKey } from '../lib/keys.ts';
 
@@ -11,8 +12,6 @@ const PATH = '/ws';
 const MAX_PAYLOAD = 64 * 1024;
 const SWEEP_MS = 5_000;
 const HEARTBEAT_MS = 30_000;
-const HOUR_MS = 3600_000;
-const DEFAULT_HOSTS_PER_HOUR = 30;
 
 type Room = {
   key: string;
@@ -42,6 +41,27 @@ function compileTrust(val: Config['trustProxy']): (addr: string, i: number) => b
   return proxyAddr.compile([]);
 }
 
+/** Sliding-window counter per client IP. */
+function slidingWindow(now: () => number, windowMs: number, limit: number) {
+  const hits = new Map<string, number[]>();
+  const recent = (ip: string) => {
+    const t = now();
+    const times = (hits.get(ip) ?? []).filter((x) => x > t - windowMs);
+    if (times.length) hits.set(ip, times);
+    else hits.delete(ip);
+    return times;
+  };
+  return {
+    full: (ip: string) => recent(ip).length >= limit,
+    hit(ip: string) {
+      hits.set(ip, [...recent(ip), now()]);
+    },
+    prune() {
+      for (const ip of [...hits.keys()]) recent(ip);
+    },
+  };
+}
+
 function parse(data: RawData, isBinary: boolean): Msg | null {
   if (isBinary) return null;
   try {
@@ -64,19 +84,24 @@ export function createSignaling({
   config,
   now,
   isStoredKey,
-  rateLimitPerHour = DEFAULT_HOSTS_PER_HOUR,
+  rateLimitPerHour,
+  joinMissPerWindow,
   heartbeatMs = HEARTBEAT_MS,
 }: {
   config: Config;
   now: () => number;
   isStoredKey: (key: string) => boolean;
-  rateLimitPerHour?: number;
+  /** `host` messages per client IP per `WINDOWS.ws` window (1 h). */
+  rateLimitPerHour: number;
+  /** `not-found`/`not-live` join replies per client IP per `WINDOWS.miss` window, like the HTTP miss limiter. */
+  joinMissPerWindow: number;
   heartbeatMs?: number;
 }) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
   const rooms = new Map<string, Room>();
   const peers = new Map<WebSocket, Peer>();
-  const hosts = new Map<string, number[]>(); // ip -> times of recent `host` messages
+  const hostLimit = slidingWindow(now, WINDOWS.ws.windowMs, rateLimitPerHour);
+  const joinMisses = slidingWindow(now, WINDOWS.miss.windowMs, joinMissPerWindow); // stops key guessing
   const trust = compileTrust(config.trustProxy);
   const attached = new Set<http.Server>();
 
@@ -110,28 +135,23 @@ export function createSignaling({
     for (const room of [...rooms.values()]) {
       if (!room.bound && !room.receiver && t >= room.expiresAt) endRoom(room, { type: 'expired' }, { type: 'expired' });
     }
-    for (const [ip, times] of hosts) {
-      const recent = times.filter((x) => x > t - HOUR_MS);
-      if (recent.length) hosts.set(ip, recent);
-      else hosts.delete(ip);
-    }
+    hostLimit.prune();
+    joinMisses.prune();
   }
 
-  function overLimit(ip: string): boolean {
-    const t = now();
-    const recent = (hosts.get(ip) ?? []).filter((x) => x > t - HOUR_MS);
-    if (recent.length >= rateLimitPerHour) {
-      hosts.set(ip, recent);
-      return true;
-    }
-    recent.push(t);
-    hosts.set(ip, recent);
-    return false;
+  /** The room this key names, if the token is its sender's. */
+  function ownedRoom(key: string, liveToken: string): Room | undefined {
+    const room = rooms.get(key);
+    if (!room) return undefined;
+    const a = Buffer.from(sha256Hex(liveToken));
+    const b = Buffer.from(room.tokenHash);
+    return timingSafeEqual(a, b) ? room : undefined; // both are sha256 hex: equal length
   }
 
   function onHost(ws: WebSocket, peer: Peer) {
     if (peer.role) return send(ws, { type: 'error', code: 'bad_state' });
-    if (overLimit(peer.ip)) return send(ws, { type: 'error', code: 'rate_limited' });
+    if (hostLimit.full(peer.ip)) return send(ws, { type: 'error', code: 'rate_limited' });
+    hostLimit.hit(peer.ip);
     const key = generateKey(config.keyLength, (k) => rooms.has(k) || isStoredKey(k));
     const liveToken = randomToken();
     const room: Room = {
@@ -149,9 +169,16 @@ export function createSignaling({
 
   function onJoin(ws: WebSocket, peer: Peer, input: unknown) {
     if (peer.role) return send(ws, { type: 'error', code: 'bad_state' });
+    if (joinMisses.full(peer.ip)) {
+      send(ws, { type: 'error', code: 'rate_limited' });
+      return ws.close(1008);
+    }
     const key = normalizeKey(input, config.keyLength);
     const room = key ? rooms.get(key) : undefined;
-    if (!room) return send(ws, { type: key && isStoredKey(key) ? 'not-live' : 'not-found' });
+    if (!room) {
+      joinMisses.hit(peer.ip);
+      return send(ws, { type: key && isStoredKey(key) ? 'not-live' : 'not-found' });
+    }
     if (room.receiver) return send(ws, { type: 'busy' });
     room.receiver = ws;
     peer.role = 'receiver';
@@ -177,7 +204,7 @@ export function createSignaling({
     } else {
       room.receiver = undefined;
       room.expiresAt = now() + config.liveKeyTtlMs; // waiting for a new receiver again
-      send(room.sender, { type: 'peer-left' });
+      send(room.sender, { type: 'peer-left', expiresAt: room.expiresAt });
     }
   }
 
@@ -239,13 +266,15 @@ export function createSignaling({
 
     /** True when the key is live and the token is its sender's; the key then no longer expires. */
     claimLiveKey(key: string, liveToken: string): boolean {
-      const room = rooms.get(key);
-      if (!room) return false;
-      const a = Buffer.from(sha256Hex(liveToken));
-      const b = Buffer.from(room.tokenHash);
-      if (!timingSafeEqual(a, b)) return false; // both are sha256 hex: equal length
-      room.bound = true;
-      return true;
+      const room = ownedRoom(key, liveToken);
+      if (room) room.bound = true;
+      return room !== undefined;
+    },
+
+    /** Undoes a claim whose upload failed: the key can expire again. */
+    releaseClaim(key: string, liveToken: string): void {
+      const room = ownedRoom(key, liveToken);
+      if (room) room.bound = false;
     },
 
     /** The live key now names a stored transfer: the receiver switches to a normal download. */

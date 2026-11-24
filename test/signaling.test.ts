@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
 import { makeTestApp, postJson, type TestApp } from './helpers.ts';
@@ -216,7 +218,7 @@ test('the TTL restarts when the receiver leaves', async (t) => {
   clock += 30 * 60_000;
 
   receiver.ws.close();
-  await sender.next('peer-left');
+  assert.deepEqual(await sender.next('peer-left'), { type: 'peer-left', expiresAt: clock + 10 * 60_000 });
   clock += 10 * 60_000 - 1000;
   a.signaling.sweep();
   assert.equal(a.signaling.isLive(key), true);
@@ -228,7 +230,7 @@ test('the TTL restarts when the receiver leaves', async (t) => {
 });
 
 test('the heartbeat drops a sender that stops answering pings', async (t) => {
-  const a = await app(t, { heartbeatMs: 50 });
+  const a = await app(t, { heartbeatMs: 200 });
   const { sender, key } = await host(t, a);
   const receiver = await connect(t, a);
   receiver.send({ type: 'join', key });
@@ -381,4 +383,64 @@ test('upgrades on any other path are refused', async (t) => {
   await assert.rejects(connect(t, a, {}, '/other'));
   await assert.rejects(connect(t, a, {}, '/ws/x'));
   await host(t, a);
+});
+
+test('join misses are limited per client IP and close the socket', async (t) => {
+  const a = await app(t, { configEnv: { TRUST_PROXY: '1' }, rateLimits: { miss: 3 } });
+  const ipA = { 'x-forwarded-for': '198.51.100.1' };
+  const ipB = { 'x-forwarded-for': '198.51.100.2' };
+  const live = await host(t, a);
+  const ok = await connect(t, a, ipA);
+  ok.send({ type: 'join', key: live.key });
+  await ok.next('joined'); // a successful join does not count
+
+  const res = await upload(a);
+  const stored = ((await res.json()) as { key: string }).key;
+  const c = await connect(t, a, ipA);
+  c.send({ type: 'join', key: 'nope' });
+  await c.next('not-found');
+  c.send({ type: 'join', key: stored });
+  await c.next('not-live');
+  c.send({ type: 'join', key: live.key === '222222' ? '333333' : '222222' });
+  await c.next('not-found');
+  c.send({ type: 'join', key: live.key });
+  assert.equal((await c.next('error')).code, 'rate_limited');
+  await c.closed;
+  const again = await connect(t, a, ipA);
+  again.send({ type: 'join', key: 'nope' });
+  assert.equal((await again.next('error')).code, 'rate_limited');
+
+  const other = await host(t, a);
+  const b = await connect(t, a, ipB);
+  b.send({ type: 'join', key: other.key });
+  await b.next('joined');
+});
+
+test('a failed fallback complete releases its claim on the live key', async (t) => {
+  let clock = Date.now();
+  const a = await app(t, { now: () => clock });
+  const { sender, key, liveToken } = await host(t, a);
+
+  const res = await fetch(`${a.base}/api/transfers`, postJson({ files: [{ name: 'a.txt', size: 5 }] }));
+  const c = (await res.json()) as { transferId: string; uploadToken: string; files: { fileId: string }[] };
+  const fileId = c.files[0]!.fileId;
+  const put = await fetch(`${a.base}/api/transfers/${c.transferId}/files/${fileId}/chunks/0`, {
+    method: 'PUT',
+    headers: { 'x-upload-token': c.uploadToken, 'content-type': 'application/octet-stream' },
+    body: 'hello',
+  });
+  assert.equal(put.status, 204);
+  // the part file shrinks behind the server's back: complete fails after claiming the key
+  fs.truncateSync(path.join(a.deps.config.dataDir, 'files', c.transferId, `${fileId}.part`), 2);
+  const done = await fetch(`${a.base}/api/transfers/${c.transferId}/complete`, {
+    method: 'POST',
+    headers: { 'x-upload-token': c.uploadToken, 'content-type': 'application/json' },
+    body: JSON.stringify({ liveKey: key, liveToken }),
+  });
+  assert.equal(done.status, 409);
+
+  clock += 10 * 60_000;
+  a.signaling.sweep();
+  await sender.next('expired');
+  assert.equal(a.signaling.isLive(key), false);
 });

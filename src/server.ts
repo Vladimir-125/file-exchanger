@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 import { openDb } from './db/client.ts';
+import { WINDOWS } from './middleware/rateLimits.ts';
 import { createSignaling, type SignalingHub } from './realtime/signaling.ts';
 import { createMailer } from './services/mailer.ts';
 import { createTransferService, type TransferService } from './services/transfers.ts';
@@ -26,7 +27,13 @@ export async function startServer(
     const now = Date.now;
     // signaling and transfers need each other: the closure reads `transfers` only once both exist
     let transfers: TransferService;
-    signaling = createSignaling({ config, now, isStoredKey: (k) => transfers.hasReadyKey(k) });
+    signaling = createSignaling({
+      config,
+      now,
+      isStoredKey: (k) => transfers.hasReadyKey(k),
+      rateLimitPerHour: WINDOWS.ws.limit,
+      joinMissPerWindow: WINDOWS.miss.limit,
+    });
     transfers = createTransferService({ db, config, now, signaling });
     const app = createApp({ config, db, mailer: createMailer(config), now, transfers });
     server = http.createServer(app);
