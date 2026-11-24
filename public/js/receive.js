@@ -1,7 +1,7 @@
 // Receive view (stored transfers, password unlock) and the direct receiver.
 
-import { ApiError, api, fileUrl, friendlyError, zipUrl } from './api.js';
-import { createPeer, openSignaling, receiveFiles, wsUrl } from './direct.js';
+import { api, fileUrl, friendlyError, zipUrl } from './api.js';
+import { createPeer, joinOutcome, openSignaling, receiveFiles, wsUrl } from './direct.js';
 import { $, countdown, fileRow, h, onLeave, progress, setText, showView } from './ui.js';
 
 const KEY_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -20,6 +20,7 @@ export function normalizeKey(input, length) {
 
 export function init(ctx) {
   app = ctx;
+  $('key-input').maxLength = app.config.keyLength + 1; // room for one separator, as in K7P-X3M
   $('key-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const key = normalizeKey($('key-input').value, app.config.keyLength);
@@ -92,25 +93,22 @@ function joinLive(key) {
   const timer = setTimeout(fallBack, JOIN_TIMEOUT_MS);
   const sig = openSignaling(wsUrl(location), (msg) => {
     if (settled) return;
-    if (msg.type === 'joined') {
+    const outcome = joinOutcome(msg);
+    if (outcome === 'direct') {
       settled = true;
       joined = true;
       clearTimeout(timer);
       receiveDirect(key, sig, msg.iceServers);
-    } else if (msg.type === 'busy') {
+    } else if (outcome === 'busy') {
       settled = true;
       clearTimeout(timer);
       sig.close();
       setText('receive-status', '');
       setText('receive-error', 'Someone else is already receiving these files. Ask the sender to start again.');
-    } else if (msg.type === 'error' && msg.code === 'rate_limited') {
-      settled = true;
-      clearTimeout(timer);
-      sig.close();
-      setText('receive-status', '');
-      setText('receive-error', friendlyError(new ApiError(429, 'rate_limited', '')));
     } else {
-      fallBack(); // not-live, not-found, other errors, or the socket failed
+      // not-live, not-found, any error (rate_limited too: the server counts stored opens as join
+      // misses), or the socket failed: the HTTP lookup decides and reports its own 404/429
+      fallBack();
     }
   });
   sig.sendWhenOpen({ type: 'join', key });

@@ -24,6 +24,10 @@ export function setText(id, text) {
 }
 
 let leaving = [];
+let viewToken = 0;
+
+/** Changes on every showView: work started in a view checks it before touching the page again. */
+export const currentView = () => viewToken;
 
 /** Runs `fn` when the current view is left (timers, sockets, object URLs). */
 export function onLeave(fn) {
@@ -36,6 +40,7 @@ const TABS = { send: 'send', result: 'send', receive: 'receive', direct: null, a
 export function showView(name) {
   const cleanups = leaving;
   leaving = [];
+  viewToken++;
   for (const fn of cleanups) {
     try {
       fn();

@@ -4,6 +4,7 @@
 import { ApiError, errorFrom, request } from './api.js';
 
 const BACKOFF_MS = [1000, 2000, 4000];
+const CHUNK_TIMEOUT_MS = 120_000; // a stalled chunk PUT fails and is retried
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const enc = encodeURIComponent;
 
@@ -60,6 +61,8 @@ export function xhrPutChunk(url, blob, token, onBytes) {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url);
     xhr.setRequestHeader('x-upload-token', token);
+    xhr.timeout = CHUNK_TIMEOUT_MS;
+    xhr.ontimeout = () => reject(new ApiError(0, 'timeout', 'The upload stalled. Check your connection.'));
     xhr.upload.onprogress = (e) => onBytes(e.loaded);
     xhr.onerror = () => reject(new ApiError(0, 'network', 'Could not reach the server. Check your connection.'));
     xhr.onload = async () => {

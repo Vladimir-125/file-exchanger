@@ -150,6 +150,17 @@ export function receiveFiles(channel, onFile = () => {}, onProgress = () => {}) 
   });
 }
 
+/**
+ * What a receiver does with the first answer to its `join`: 'direct' (paired with a live sender),
+ * 'busy' (someone else is receiving), else 'stored'. Every other answer, including a rate-limited
+ * join, falls back to the HTTP lookup, which reports its own errors.
+ */
+export function joinOutcome(msg) {
+  if (msg.type === 'joined') return 'direct';
+  if (msg.type === 'busy') return 'busy';
+  return 'stored';
+}
+
 /** The signaling endpoint for a page location. */
 export function wsUrl(loc) {
   return `${loc.protocol === 'https:' ? 'wss' : 'ws'}://${loc.host}/ws`;
