@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Transform, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { and, asc, desc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
+import { ipKeyGenerator } from 'express-rate-limit';
 import type { Config } from '../config.ts';
 import type { Db } from '../db/client.ts';
 import { sessions, transferFiles, transfers, type Transfer, type TransferFile } from '../db/schema.ts';
@@ -24,7 +25,13 @@ export type Signaling = {
   notifyStored(key: string): void;
 };
 
-export type CreateInput = { files: { name: string; size: number; mime?: string }[]; password?: string; ownerId?: number };
+export type CreateInput = {
+  files: { name: string; size: number; mime?: string }[];
+  password?: string;
+  ownerId?: number;
+  /** The creating client's IP (req.ip): its unfinished uploads may reserve at most `maxTransferBytes`. */
+  ip?: string;
+};
 export type PublicFile = { fileId: string; name: string; size: number };
 export type CreateResult = { transferId: string; uploadToken: string; chunkBytes: number; files: PublicFile[] };
 export type ReadyTransfer = { key: string; url: string; expiresAt: number; protected: boolean; files: PublicFile[] };
@@ -44,7 +51,9 @@ type UploadState = {
   received: Map<string, Set<number>>; // fileId -> chunk indexes fully written
   inflight: number;
   completing: boolean;
-  lastActivity: number;
+  lastActivity: number; // when a chunk was last written successfully
+  client: string; // rate-limit key of the creator's IP (IPv6 by prefix)
+  size: number; // bytes reserved against the storage cap
 };
 
 const notFound = () => new HttpError(404, 'not_found', 'Transfer not found');
@@ -92,7 +101,7 @@ export function createTransferService({
     let state = uploads.get(row.id);
     // after a restart an unprotected upload can be resumed by re-sending every chunk
     if (!state && !row.passwordHash) {
-      state = { received: new Map(), inflight: 0, completing: false, lastActivity: now() };
+      state = { received: new Map(), inflight: 0, completing: false, lastActivity: now(), client: '', size: row.totalSize };
       uploads.set(row.id, state);
     }
     return state;
@@ -185,6 +194,12 @@ export function createTransferService({
         };
       });
       const t = now();
+      const client = ipKeyGenerator(input.ip ?? '');
+      let reserved = 0;
+      for (const u of uploads.values()) if (u.client === client) reserved += u.size;
+      if (reserved + total > config.maxTransferBytes) {
+        throw new HttpError(429, 'too_many_uploads', 'Finish or cancel your other uploads before starting a new one');
+      }
       db.transaction((tx) => {
         const used = tx
           .select({ sum: sql<number>`coalesce(sum(${transfers.totalSize}), 0)` })
@@ -208,6 +223,16 @@ export function createTransferService({
           .run();
         tx.insert(transferFiles).values(fileRows).run();
       });
+      // registered before the awaits below, so a concurrent create from the same client sees it
+      uploads.set(transferId, {
+        password: input.password,
+        received: new Map(fileRows.map((f) => [f.id, new Set<number>()])),
+        inflight: 0,
+        completing: false,
+        lastActivity: t,
+        client,
+        size: total,
+      });
 
       try {
         const dir = dirOf(transferId);
@@ -217,13 +242,6 @@ export function createTransferService({
         await remove(transferId).catch(() => {});
         throw err;
       }
-      uploads.set(transferId, {
-        password: input.password,
-        received: new Map(fileRows.map((f) => [f.id, new Set<number>()])),
-        inflight: 0,
-        completing: false,
-        lastActivity: t,
-      });
 
       return {
         transferId,
@@ -285,7 +303,6 @@ export function createTransferService({
       state.received.set(fileId, chunks);
       chunks.delete(index); // being overwritten: not valid until this write finishes
       state.inflight++;
-      state.lastActivity = now();
       try {
         await pipeline(body, counter, out);
       } catch (err) {
@@ -294,10 +311,10 @@ export function createTransferService({
         throw new HttpError(400, 'aborted', 'The upload was interrupted'); // client went away
       } finally {
         state.inflight--;
-        state.lastActivity = now();
       }
       if (received < expected) throw new HttpError(400, 'short_chunk', `Chunk ${index} must be ${expected} bytes`);
       chunks.add(index);
+      state.lastActivity = now(); // only a written chunk counts as progress: failing PUTs cannot keep a reservation
     },
 
     async complete(transferId: string, uploadToken: string, opts: CompleteOpts = {}): Promise<ReadyTransfer> {
