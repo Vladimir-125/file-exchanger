@@ -165,14 +165,11 @@ test('receiver leaving keeps the key live for a new receiver', async (t) => {
   await sender.next('peer-joined');
 });
 
-test('a live key expires after the TTL unless claimed', async (t) => {
+test('an unpaired live key expires after the TTL unless claimed', async (t) => {
   let clock = Date.now();
   const a = await app(t, { now: () => clock });
   const { sender, key, hosted } = await host(t, a);
   assert.equal(hosted.expiresAt, clock + 10 * 60_000);
-  const receiver = await connect(t, a);
-  receiver.send({ type: 'join', key });
-  await receiver.next('joined');
   const claimed = await host(t, a);
   assert.equal(a.signaling.claimLiveKey(claimed.key, claimed.liveToken), true);
 
@@ -183,10 +180,64 @@ test('a live key expires after the TTL unless claimed', async (t) => {
   clock += 1;
   a.signaling.sweep();
   await sender.next('expired');
-  await receiver.next('expired');
-  await Promise.all([sender.closed, receiver.closed]);
+  await sender.closed;
   assert.equal(a.signaling.isLive(key), false);
   assert.equal(a.signaling.isLive(claimed.key), true, 'a claimed key does not expire');
+});
+
+test('a paired key does not expire, so a long fallback upload keeps it', async (t) => {
+  let clock = Date.now();
+  const a = await app(t, { now: () => clock });
+  const { sender, key, liveToken } = await host(t, a);
+  const receiver = await connect(t, a);
+  receiver.send({ type: 'join', key });
+  await receiver.next('joined');
+
+  clock += 30 * 60_000;
+  a.signaling.sweep();
+  await flush(sender);
+  await flush(receiver);
+  assert.ok(![...sender.received, ...receiver.received].some((m) => m.type === 'expired'));
+  assert.equal(a.signaling.isLive(key), true);
+
+  const res = await upload(a, { liveKey: key, liveToken });
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as { key: string }).key, key);
+  assert.deepEqual(await receiver.next('switch-to-download'), { type: 'switch-to-download', key });
+});
+
+test('the TTL restarts when the receiver leaves', async (t) => {
+  let clock = Date.now();
+  const a = await app(t, { now: () => clock });
+  const { sender, key } = await host(t, a);
+  const receiver = await connect(t, a);
+  receiver.send({ type: 'join', key });
+  await receiver.next('joined');
+  clock += 30 * 60_000;
+
+  receiver.ws.close();
+  await sender.next('peer-left');
+  clock += 10 * 60_000 - 1000;
+  a.signaling.sweep();
+  assert.equal(a.signaling.isLive(key), true);
+
+  clock += 2000;
+  a.signaling.sweep();
+  await sender.next('expired');
+  assert.equal(a.signaling.isLive(key), false);
+});
+
+test('the heartbeat drops a sender that stops answering pings', async (t) => {
+  const a = await app(t, { heartbeatMs: 50 });
+  const { sender, key } = await host(t, a);
+  const receiver = await connect(t, a);
+  receiver.send({ type: 'join', key });
+  await receiver.next('joined');
+
+  (sender.ws as unknown as { _socket: { pause(): void } })._socket.pause(); // pings go unanswered
+  await receiver.next('peer-left');
+  assert.equal(a.signaling.isLive(key), false);
+  assert.equal(receiver.ws.readyState, receiver.ws.OPEN, 'the live receiver is kept');
 });
 
 test('an expired key is also caught on the next message', async (t) => {

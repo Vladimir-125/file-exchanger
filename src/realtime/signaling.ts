@@ -19,6 +19,11 @@ type Room = {
   sender: WebSocket;
   receiver?: WebSocket;
   tokenHash: string;
+  /**
+   * Deadline for a receiver to arrive. It only counts while nobody is paired: a paired room (a
+   * direct transfer or its fallback upload in progress) ends only through a disconnect,
+   * notifyStored or close(). It restarts when the receiver leaves.
+   */
   expiresAt: number;
   bound: boolean; // claimed by a fallback upload: no longer expires
 };
@@ -51,17 +56,22 @@ function parse(data: RawData, isBinary: boolean): Msg | null {
 /**
  * WebSocket hub for direct transfers: pairs a sender and a receiver on a live key and relays
  * their WebRTC signals verbatim. Holds no file data.
+ *
+ * A room lives exactly as long as its sender's socket: a sender doing a fallback upload must keep
+ * the socket open until `complete` returns, or the key is freed and the upload gets a new one.
  */
 export function createSignaling({
   config,
   now,
   isStoredKey,
   rateLimitPerHour = DEFAULT_HOSTS_PER_HOUR,
+  heartbeatMs = HEARTBEAT_MS,
 }: {
   config: Config;
   now: () => number;
   isStoredKey: (key: string) => boolean;
   rateLimitPerHour?: number;
+  heartbeatMs?: number;
 }) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
   const rooms = new Map<string, Room>();
@@ -98,7 +108,7 @@ export function createSignaling({
   function sweep() {
     const t = now();
     for (const room of [...rooms.values()]) {
-      if (!room.bound && t >= room.expiresAt) endRoom(room, { type: 'expired' }, { type: 'expired' });
+      if (!room.bound && !room.receiver && t >= room.expiresAt) endRoom(room, { type: 'expired' }, { type: 'expired' });
     }
     for (const [ip, times] of hosts) {
       const recent = times.filter((x) => x > t - HOUR_MS);
@@ -166,6 +176,7 @@ export function createSignaling({
       send(room.receiver, { type: 'peer-left' });
     } else {
       room.receiver = undefined;
+      room.expiresAt = now() + config.liveKeyTtlMs; // waiting for a new receiver again
       send(room.sender, { type: 'peer-left' });
     }
   }
@@ -213,7 +224,7 @@ export function createSignaling({
       peer.alive = false;
       ws.ping();
     }
-  }, HEARTBEAT_MS);
+  }, heartbeatMs);
   heartbeat.unref();
 
   return {
