@@ -101,7 +101,7 @@
 			})
 			.done(function(res) {
 				console.log(res);
-				$('#user_name').html('Welcome, '+res+'!');
+				$('#user_name').text('Welcome, '+res+'!');
 			});
 		});
 		// Add the name of the file appear on select
@@ -222,7 +222,7 @@
 						  			<div class="row">
 						  				<div class="col-sm-9">
 						  					<h5 class="card-title mb-0">Download Key: ${key}</h5>
-							    			<p class="card-text">${filename}<br>Expire time: <span id="${timerId}">${time}</span></p>
+							    			<p class="card-text">${$('<div>').text(filename).html()}<br>Expire time: <span id="${timerId}">${time}</span></p>
 						  				</div>
 						  				<div class="col-sm-3" id="${qrCodeId}">
 						  				</div>
