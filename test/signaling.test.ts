@@ -536,3 +536,28 @@ test('a live key that cannot be kept at complete ends the room and tells the rec
   assert.equal(a.signaling.isLive(key), false);
   assert.equal(sender.ws.readyState, sender.ws.OPEN, 'the sender is not cut off mid-upload');
 });
+
+test('a socket that sends more than 100 messages in 10 seconds gets rate_limited and is closed', async (t) => {
+  const clock = Date.now();
+  const a = await app(t, { now: () => clock });
+  const c = await connect(t, a);
+  for (let i = 0; i < 101; i++) c.send('probe');
+  await c.closed;
+  assert.equal(c.received.filter((m) => m.code === 'bad_message').length, 100);
+  assert.equal(c.received.at(-1)!.code, 'rate_limited');
+});
+
+test('the message budget refills with the window', async (t) => {
+  let clock = Date.now();
+  const a = await app(t, { now: () => clock });
+  const c = await connect(t, a);
+  const burst = async (total: number) => {
+    for (let i = 0; i < 100; i++) c.send('probe');
+    while (c.received.length < total) await new Promise((r) => setTimeout(r, 5));
+  };
+  await burst(100);
+  clock += 10_001;
+  await burst(200);
+  assert.equal(c.ws.readyState, c.ws.OPEN);
+  assert.ok(c.received.every((m) => m.code === 'bad_message'));
+});

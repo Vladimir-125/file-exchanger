@@ -13,6 +13,7 @@ const PATH = '/ws';
 const MAX_PAYLOAD = 64 * 1024;
 const SWEEP_MS = 5_000;
 const HEARTBEAT_MS = 30_000;
+const MESSAGE_BUDGET = { limit: 100, windowMs: 10_000 }; // per socket; more closes it with `rate_limited`
 
 type Room = {
   key: string;
@@ -29,7 +30,7 @@ type Room = {
 };
 
 /** `client` is the rate-limit key of the peer's IP: IPv6 by /56 prefix, as the HTTP limiters count. */
-type Peer = { client: string; alive: boolean; role?: 'sender' | 'receiver'; room?: Room };
+type Peer = { client: string; alive: boolean; windowStart: number; messages: number; role?: 'sender' | 'receiver'; room?: Room };
 
 type Msg = { type: string; key?: unknown; data?: unknown };
 
@@ -142,11 +143,16 @@ export function createSignaling({
     room.receiver?.close(1000);
   }
 
-  function sweep() {
-    const t = now();
-    for (const room of [...rooms.values()]) {
-      if (!room.bound && !room.receiver && t >= room.expiresAt) endRoom(room, { type: 'expired' }, { type: 'expired' });
+  /** Ends a room whose receiver wait ran out. A paired or claimed room never expires. */
+  function expireIfDue(room: Room | undefined) {
+    if (room && !room.bound && !room.receiver && now() >= room.expiresAt) {
+      endRoom(room, { type: 'expired' }, { type: 'expired' });
     }
+  }
+
+  /** The full pass, on the interval timer; messages only check the room they touch. */
+  function sweep() {
+    for (const room of [...rooms.values()]) expireIfDue(room);
     hostLimit.prune();
     joinMisses.prune();
   }
@@ -186,6 +192,7 @@ export function createSignaling({
       return ws.close(1008);
     }
     const key = normalizeKey(input, config.keyLength);
+    expireIfDue(key ? rooms.get(key) : undefined);
     const room = key ? rooms.get(key) : undefined;
     if (!room) {
       if (key && isStoredKey(key)) return send(ws, { type: 'not-live' });
@@ -222,14 +229,20 @@ export function createSignaling({
   }
 
   function onConnection(ws: WebSocket, req: http.IncomingMessage) {
-    const peer: Peer = { client: ipKeyGenerator(proxyAddr(req, trust)), alive: true };
+    const peer: Peer = { client: ipKeyGenerator(proxyAddr(req, trust)), alive: true, windowStart: now(), messages: 0 };
     peers.set(ws, peer);
     ws.on('pong', () => {
       peer.alive = true;
     });
     ws.on('message', (data, isBinary) => {
-      sweep();
-      if (ws.readyState !== ws.OPEN) return; // closing: ended by this sweep or earlier
+      const t = now();
+      if (t - peer.windowStart >= MESSAGE_BUDGET.windowMs) [peer.windowStart, peer.messages] = [t, 0];
+      if (++peer.messages > MESSAGE_BUDGET.limit) {
+        send(ws, { type: 'error', code: 'rate_limited' });
+        return ws.close(1008);
+      }
+      expireIfDue(peer.room); // this socket's own room is checked here, all rooms by the timer
+      if (ws.readyState !== ws.OPEN) return; // closing: its room ended by the check above or earlier
       const msg = parse(data, isBinary);
       if (msg?.type === 'host') onHost(ws, peer);
       else if (msg?.type === 'join') onJoin(ws, peer, msg.key);
