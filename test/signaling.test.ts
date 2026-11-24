@@ -312,7 +312,7 @@ test('the 31st host from one IP within an hour is rate limited', async (t) => {
 });
 
 test('the host limit is per client IP from X-Forwarded-For when TRUST_PROXY is set', async (t) => {
-  const a = await app(t, { configEnv: { TRUST_PROXY: '1' }, rateLimits: { ws: 1 } });
+  const a = await app(t, { configEnv: { TRUST_PROXY: '1', BASE_URL: 'http://files.test' }, rateLimits: { ws: 1 } });
   const one = { 'x-forwarded-for': '198.51.100.1' };
   const two = { 'x-forwarded-for': '198.51.100.2' };
   (await connect(t, a, one)).send({ type: 'host' });
@@ -386,7 +386,7 @@ test('upgrades on any other path are refused', async (t) => {
 });
 
 test('join misses are limited per client IP and close the socket', async (t) => {
-  const a = await app(t, { configEnv: { TRUST_PROXY: '1' }, rateLimits: { miss: 3 } });
+  const a = await app(t, { configEnv: { TRUST_PROXY: '1', BASE_URL: 'http://files.test' }, rateLimits: { miss: 3 } });
   const ipA = { 'x-forwarded-for': '198.51.100.1' };
   const ipB = { 'x-forwarded-for': '198.51.100.2' };
   const live = await host(t, a);
@@ -421,7 +421,7 @@ test('join misses are limited per client IP and close the socket', async (t) => 
 });
 
 test('IPv6 clients share one join-miss and host budget per /56 prefix', async (t) => {
-  const a = await app(t, { configEnv: { TRUST_PROXY: '1' }, rateLimits: { miss: 2, ws: 1 } });
+  const a = await app(t, { configEnv: { TRUST_PROXY: '1', BASE_URL: 'http://files.test' }, rateLimits: { miss: 2, ws: 1 } });
   const first = await connect(t, a, { 'x-forwarded-for': '2001:db8:0:1::1' });
   first.send({ type: 'join', key: 'nope' });
   await first.next('not-found');

@@ -53,9 +53,17 @@ test('COOKIE_SECURE', () => {
 
 test('TRUST_PROXY parsing', () => {
   for (const v of ['', 'false', '0']) assert.equal(cfg({ TRUST_PROXY: v }).trustProxy, false);
-  assert.equal(cfg({ TRUST_PROXY: 'true' }).trustProxy, 1);
-  assert.equal(cfg({ TRUST_PROXY: '2' }).trustProxy, 2);
-  assert.equal(cfg({ TRUST_PROXY: 'loopback' }).trustProxy, 'loopback');
+  const proxied = (v: string) => cfg({ TRUST_PROXY: v, BASE_URL: 'https://files.example.com' }).trustProxy;
+  assert.equal(proxied('true'), 1);
+  assert.equal(proxied('2'), 2);
+  assert.equal(proxied('loopback'), 'loopback');
+});
+
+test('TRUST_PROXY without BASE_URL is refused: links must not come from forwarded headers', () => {
+  for (const env of [{ TRUST_PROXY: '1' }, { TRUST_PROXY: 'loopback', BASE_URL: '' }]) {
+    assert.throws(() => cfg(env), /BASE_URL must be set when TRUST_PROXY is/);
+  }
+  assert.equal(cfg({ TRUST_PROXY: 'false' }).baseUrl, '');
 });
 
 test('TURN server is appended to iceServers', () => {

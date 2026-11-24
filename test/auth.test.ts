@@ -26,6 +26,17 @@ describe('accounts', () => {
     confirmPath = `/confirm/${m[1]}`;
   });
 
+  it('without BASE_URL the link uses the Host header, never X-Forwarded-Host', async () => {
+    const res = await fetch(`${t.base}/api/auth/signup`, {
+      ...postJson({ ...creds, email: 'xfh@example.com' }),
+      headers: { 'content-type': 'application/json', 'x-forwarded-host': 'evil.example' },
+    });
+    assert.equal(res.status, 202);
+    const text = t.mail.pop()!.text;
+    assert.ok(text.includes(`${t.base}/confirm/`));
+    assert.ok(!text.includes('evil.example'));
+  });
+
   it('signup again while unconfirmed re-sends the link', async () => {
     const res = await fetch(`${t.base}/api/auth/signup`, postJson(creds));
     assert.equal(res.status, 202);

@@ -80,6 +80,12 @@ function parseTrustProxy(v: string | undefined): boolean | number | string {
 
 export function loadConfig(env: Record<string, string | undefined>): Config {
   const e = schema.parse(env);
+  const trustProxy = parseTrustProxy(e.TRUST_PROXY);
+  const baseUrl = e.BASE_URL ?? '';
+  if (trustProxy !== false && baseUrl === '') {
+    // links would otherwise be built from forwarded headers, which a client can set
+    throw new Error('BASE_URL must be set when TRUST_PROXY is, e.g. BASE_URL=https://files.example.com');
+  }
 
   let appSecret: Buffer;
   if (e.APP_SECRET) {
@@ -100,9 +106,9 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
   return {
     port: e.PORT,
     dataDir: path.resolve(e.DATA_DIR || './data'),
-    baseUrl: e.BASE_URL ?? '',
+    baseUrl,
     appSecret,
-    trustProxy: parseTrustProxy(e.TRUST_PROXY),
+    trustProxy,
     cookieSecure: ['true', '1'].includes((e.COOKIE_SECURE ?? '').trim().toLowerCase()),
     transferTtlMs: Math.floor(e.TRANSFER_TTL_HOURS * 3600e3),
     liveKeyTtlMs: Math.floor(e.LIVE_KEY_TTL_MINUTES * 60e3),

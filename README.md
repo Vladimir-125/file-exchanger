@@ -43,9 +43,9 @@ All settings are environment variables, read from the process environment or a `
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port |
 | `DATA_DIR` | `./data` (`/data` in Docker) | SQLite database and stored files |
-| `BASE_URL` | empty | Public URL used in share links and emails, e.g. `https://files.example.com`. Empty: built from the request `Host` header |
+| `BASE_URL` | empty | Public URL used in share links and emails, e.g. `https://files.example.com`. Empty: built from the request `Host` header (local use only); required when `TRUST_PROXY` is set |
 | `APP_SECRET` | empty | 64 hex characters (`openssl rand -hex 32`). Signs sessions and download grants. Empty: random per start, so sessions and grants reset on restart |
-| `TRUST_PROXY` | empty (off) | Proxy hops to trust: `true` or a number (one hop is `1`), or an address list such as `loopback` |
+| `TRUST_PROXY` | empty (off) | Proxy hops to trust: `true` or a number (one hop is `1`), or an address list such as `loopback`. Needs `BASE_URL` |
 | `COOKIE_SECURE` | `false` | Set to `true` when served over HTTPS |
 | `TRANSFER_TTL_HOURS` | `24` | Hours a stored transfer stays downloadable |
 | `LIVE_KEY_TTL_MINUTES` | `10` | Minutes a direct-transfer key waits for a receiver |
@@ -74,7 +74,7 @@ Direct transfers use WebRTC. By default the only ICE server is the public STUN s
 
 Behind nginx, Caddy, cloudflared or similar:
 
-- `BASE_URL=https://files.example.com`. Required in production. Without it, share URLs and email links are built from the request `Host` header.
+- `BASE_URL=https://files.example.com`. Required in production: without it, share URLs and email links are built from the request `Host` header, which a client controls. With `TRUST_PROXY` set the server refuses to start without `BASE_URL`, and links are never built from `X-Forwarded-Host`.
 - `TRUST_PROXY=1` when exactly one proxy (cloudflared, a single reverse proxy) sits in front, so the per-IP rate limits see real client IPs instead of the proxy's. Leave it empty when the app is exposed directly, otherwise clients can spoof their IP with `X-Forwarded-For`.
 - `COOKIE_SECURE=true` once the site is served over HTTPS.
 - `APP_SECRET` set, so sessions survive restarts.
