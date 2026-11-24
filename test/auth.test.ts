@@ -30,7 +30,7 @@ describe('accounts', () => {
     const res = await fetch(`${t.base}/api/auth/signup`, postJson(creds));
     assert.equal(res.status, 202);
     assert.equal(t.mail.length, 2);
-    t.mail.pop();
+    confirmPath = `/confirm/${tokenOf(t.mail[1])}`; // the first link is revoked
   });
 
   it('login before confirm is 403', async () => {
@@ -82,6 +82,7 @@ describe('accounts', () => {
     assert.equal(((await short.json()) as any).error.code, 'invalid_request');
     const empty = await fetch(`${t.base}/api/auth/login`, { method: 'POST' });
     assert.equal(empty.status, 400);
+    assert.equal(((await empty.json()) as any).error.code, 'invalid_request');
     const bad = await fetch(`${t.base}/api/auth/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -97,6 +98,127 @@ describe('accounts', () => {
     const page = await fetch(`${t.base}/K7PX3M`);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /<title>File Exchanger<\/title>/);
+  });
+});
+
+const tokenOf = (m: { text: string }) => m.text.match(/\/confirm\/([A-Za-z0-9_-]{43})/)![1];
+
+describe('account edge cases', () => {
+  it('re-signup binds the new password to the new link (no pre-hijack)', async () => {
+    const t = await makeTestApp();
+    try {
+      const email = 'bob@example.com';
+      await fetch(`${t.base}/api/auth/signup`, postJson({ name: 'Bob', email, password: 'attacker-pass' }));
+      await fetch(`${t.base}/api/auth/signup`, postJson({ name: 'Bob', email, password: 'victim-pass1' }));
+      assert.equal(t.mail.length, 2);
+      const [first, second] = t.mail.map(tokenOf);
+      assert.equal((await fetch(`${t.base}/confirm/${first}`, { redirect: 'manual' })).status, 404);
+      const jar = cookieJar();
+      assert.equal((await jar.fetch(`${t.base}/confirm/${second}`)).status, 302);
+      const a = await fetch(`${t.base}/api/auth/login`, postJson({ email, password: 'attacker-pass' }));
+      assert.equal(a.status, 401);
+      const b = await fetch(`${t.base}/api/auth/login`, postJson({ email, password: 'victim-pass1' }));
+      assert.equal(b.status, 200);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('the re-sent link confirms', async () => {
+    const t = await makeTestApp();
+    try {
+      const body = { name: 'Cy', email: 'cy@example.com', password: 'password1' };
+      await fetch(`${t.base}/api/auth/signup`, postJson(body));
+      await fetch(`${t.base}/api/auth/signup`, postJson(body));
+      const res = await fetch(`${t.base}/confirm/${tokenOf(t.mail[1])}`, { redirect: 'manual' });
+      assert.equal(res.status, 302);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('an expired link is 404', async () => {
+    let now = 1_700_000_000_000;
+    const t = await makeTestApp({ now: () => now });
+    try {
+      await fetch(`${t.base}/api/auth/signup`, postJson({ name: 'Di', email: 'di@example.com', password: 'password1' }));
+      now += 24 * 3600_000 + 1;
+      const res = await fetch(`${t.base}/confirm/${tokenOf(t.mail[0])}`, { redirect: 'manual' });
+      assert.equal(res.status, 404);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('login with an unknown email is 401', async () => {
+    const t = await makeTestApp();
+    try {
+      const res = await fetch(`${t.base}/api/auth/login`, postJson({ email: 'ghost@example.com', password: 'password1' }));
+      assert.equal(res.status, 401);
+      assert.equal(((await res.json()) as any).error.code, 'invalid_credentials');
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('login issues a new session id', async () => {
+    const t = await makeTestApp();
+    try {
+      const body = { name: 'Ed', email: 'ed@example.com', password: 'password1' };
+      await fetch(`${t.base}/api/auth/signup`, postJson(body));
+      const jar = cookieJar();
+      await jar.fetch(`${t.base}/confirm/${tokenOf(t.mail[0])}`);
+      const sid = () => jar.cookie('fx_sid');
+      const before = sid();
+      assert.ok(before);
+      await jar.fetch(`${t.base}/api/auth/logout`, { method: 'POST' });
+      // pre-login session that is not authenticated
+      await jar.fetch(`${t.base}/api/auth/login`, postJson(body));
+      assert.notEqual(sid(), before);
+      const mid = sid();
+      await jar.fetch(`${t.base}/api/auth/login`, postJson(body));
+      assert.notEqual(sid(), mid);
+    } finally {
+      await t.close();
+    }
+  });
+
+  it('unknown /api paths are a JSON 404; /confirm/x is the token page', async () => {
+    const t = await makeTestApp();
+    try {
+      const nope = await fetch(`${t.base}/api/nope`);
+      assert.equal(nope.status, 404);
+      assert.equal(((await nope.json()) as any).error.code, 'not_found');
+      const c = await fetch(`${t.base}/confirm/x`, { redirect: 'manual' });
+      assert.equal(c.status, 404);
+      assert.doesNotMatch(await c.text(), /<title>/);
+      const me = await fetch(`${t.base}/api/me`);
+      assert.equal(me.status, 200);
+      assert.deepEqual(await me.json(), { user: null });
+    } finally {
+      await t.close();
+    }
+  });
+});
+
+describe('signup mail failures', () => {
+  it('a failing mailer still yields 202', async () => {
+    const t = await makeTestApp();
+    const orig = console.error;
+    console.error = () => {};
+    try {
+      t.deps.mailer.send = async () => {
+        throw new Error('smtp down');
+      };
+      const res = await fetch(
+        `${t.base}/api/auth/signup`,
+        postJson({ name: 'Fy', email: 'fy@example.com', password: 'password1' }),
+      );
+      assert.equal(res.status, 202);
+    } finally {
+      console.error = orig;
+      await t.close();
+    }
   });
 });
 

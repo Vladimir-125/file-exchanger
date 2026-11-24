@@ -1,5 +1,6 @@
 import express, { Router, type Request } from 'express';
 import { z } from 'zod';
+import { HttpError } from '../errors.ts';
 import type { Deps } from '../app.ts';
 import type { RateLimits } from '../middleware/rateLimits.ts';
 import { createUserService } from '../services/users.ts';
@@ -10,7 +11,7 @@ const signupBody = z.object({
   email: z.email().max(254),
   password: z.string().min(8).max(200),
 });
-const loginBody = z.object({ email: z.string().min(1), password: z.string().min(1) });
+const loginBody = z.object({ email: z.string().min(1).max(254), password: z.string().min(1).max(200) });
 
 const publicUser = (u: User) => ({ id: u.id, name: u.name, email: u.email });
 
@@ -58,7 +59,7 @@ export function authRouters(deps: Deps, limits: RateLimits): { api: Router; conf
       await save(req);
       res.redirect('/');
     } catch (err) {
-      if (err instanceof Error && 'code' in err && err.code === 'invalid_token') {
+      if (err instanceof HttpError && err.code === 'invalid_token') {
         res.status(404).type('text/plain').send('This confirmation link is invalid or has expired.');
       } else next(err);
     }

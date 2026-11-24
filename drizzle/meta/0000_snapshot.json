@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "104cf1da-0e9a-48a7-b326-5eb99006120c",
+  "id": "da2d6503-328e-4930-9588-c4b3eb3712d1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "email_tokens": {
@@ -17,6 +17,20 @@
         "user_id": {
           "name": "user_id",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false

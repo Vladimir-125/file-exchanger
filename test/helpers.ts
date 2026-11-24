@@ -63,6 +63,7 @@ export async function makeTestApp(
 export function cookieJar() {
   const cookies = new Map<string, string>();
   return {
+    cookie: (name: string) => cookies.get(name),
     async fetch(url: string, init: RequestInit = {}): Promise<Response> {
       const headers = new Headers(init.headers);
       if (cookies.size) headers.set('cookie', [...cookies].map(([k, v]) => `${k}=${v}`).join('; '));

@@ -14,6 +14,8 @@ export const users = sqliteTable('users', {
 export const emailTokens = sqliteTable('email_tokens', {
   tokenHash: text('token_hash').primaryKey(),
   userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  passwordHash: text('password_hash').notNull(),
   expiresAt: ts('expires_at').notNull(),
 });
 
