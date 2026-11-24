@@ -4,7 +4,7 @@
 import { ApiError, errorFrom, request } from './api.js';
 
 const BACKOFF_MS = [1000, 2000, 4000];
-const CHUNK_TIMEOUT_MS = 120_000; // a stalled chunk PUT fails and is retried
+const CHUNK_STALL_MS = 60_000; // no upload progress for this long: the chunk PUT fails and is retried
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const enc = encodeURIComponent;
 
@@ -55,20 +55,37 @@ function fetchPut(fetchImpl) {
 /**
  * Browser chunk transport with byte-level progress. XMLHttpRequest is looked up only when called.
  * `onBytes(n)` reports how much of this chunk has been sent so far.
+ * There is no overall deadline (a big chunk on a slow uplink may legitimately take minutes): an
+ * inactivity timer aborts the request when no progress event arrives for `stallMs`.
  */
-export function xhrPutChunk(url, blob, token, onBytes) {
+export function xhrPutChunk(url, blob, token, onBytes, stallMs = CHUNK_STALL_MS) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let timer;
+    const stop = () => clearTimeout(timer);
+    const arm = () => {
+      stop();
+      timer = setTimeout(() => {
+        reject(new ApiError(0, 'timeout', 'The upload stalled. Check your connection.'));
+        xhr.abort?.();
+      }, stallMs);
+    };
     xhr.open('PUT', url);
     xhr.setRequestHeader('x-upload-token', token);
-    xhr.timeout = CHUNK_TIMEOUT_MS;
-    xhr.ontimeout = () => reject(new ApiError(0, 'timeout', 'The upload stalled. Check your connection.'));
-    xhr.upload.onprogress = (e) => onBytes(e.loaded);
-    xhr.onerror = () => reject(new ApiError(0, 'network', 'Could not reach the server. Check your connection.'));
+    xhr.upload.onprogress = (e) => {
+      arm();
+      onBytes(e.loaded);
+    };
+    xhr.onerror = () => {
+      stop();
+      reject(new ApiError(0, 'network', 'Could not reach the server. Check your connection.'));
+    };
     xhr.onload = async () => {
+      stop();
       if (xhr.status >= 200 && xhr.status < 300) return resolve(null);
       reject(await errorFrom(new Response(xhr.responseText, { status: xhr.status })));
     };
+    arm();
     xhr.send(blob);
   });
 }

@@ -60,6 +60,7 @@ export async function makeTestApp(
   };
   const app = createApp(deps, createRateLimits(limits));
   const server = http.createServer(app);
+  server.requestTimeout = 0; // as in src/server.ts: slow chunk bodies must not hit the default 300 s limit
   signaling.attach(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;

@@ -127,29 +127,51 @@ test('a join answer other than joined or busy falls back to the stored lookup', 
   for (const type of ['not-live', 'not-found', 'closed']) assert.equal(joinOutcome({ type }), 'stored');
 });
 
-test('xhrPutChunk times out with a retryable error', async () => {
-  const sent: { timeout: number }[] = [];
+/** Runs xhrPutChunk against a fake XHR driven by `script(xhr)` after send. */
+async function runXhr(script: (xhr: any) => void, stallMs: number) {
   class FakeXhr {
     timeout = 0;
-    upload = { onprogress: null };
-    ontimeout: (() => void) | null = null;
+    status = 200;
+    responseText = '';
+    upload: { onprogress: ((e: { loaded: number }) => void) | null } = { onprogress: null };
+    onload: (() => void) | null = null;
     open() {}
     setRequestHeader() {}
     send() {
-      sent.push(this);
-      queueMicrotask(() => this.ontimeout?.());
+      queueMicrotask(() => script(this));
     }
   }
   const g = globalThis as { XMLHttpRequest?: unknown };
   const saved = g.XMLHttpRequest;
   g.XMLHttpRequest = FakeXhr;
   try {
-    const err = await xhrPutChunk('/x', new Blob(['a']), 'tok', () => {}).catch((e: unknown) => e);
-    assert.equal(sent[0]!.timeout, 120_000);
-    assert.equal(isRetryable(err), true);
+    return await xhrPutChunk('/x', new Blob(['a']), 'tok', () => {}, stallMs).then(
+      () => null,
+      (e: unknown) => e,
+    );
   } finally {
     g.XMLHttpRequest = saved;
   }
+}
+
+test('xhrPutChunk fails with a retryable timeout when no progress arrives', async () => {
+  const err = await runXhr(() => {}, 30);
+  assert.equal((err as { code: string }).code, 'timeout');
+  assert.equal(isRetryable(err), true);
+});
+
+test('xhrPutChunk has no hard deadline: steady progress keeps a slow request alive', async () => {
+  const err = await runXhr((xhr) => {
+    let n = 0;
+    const tick = setInterval(() => {
+      xhr.upload.onprogress({ loaded: ++n });
+      if (n === 12) {
+        clearInterval(tick);
+        xhr.onload();
+      }
+    }, 10); // 120 ms in total, four times the 30 ms stall limit
+  }, 30);
+  assert.equal(err, null);
 });
 
 /** Two fake data channels wired to each other, delivering messages asynchronously in order. */
