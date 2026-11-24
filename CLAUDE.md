@@ -33,7 +33,7 @@ API errors are always JSON `{ "error": { "code", "message" } }`.
 - **Downloads.** Always attachments, `nosniff`, `no-store`. Streams are destroyed, not ended, on error so a broken download never looks complete. Zip is a stored (uncompressed) archive built entry by entry in `services/downloads.ts`.
 - **Signaling (`/ws`).** JSON messages. Sender sends `host`, gets `hosted` with `key`, `liveToken`, `iceServers`. Receiver sends `join` with a key and gets `joined` (or `not-found`, `not-live`, `busy`). The hub then relays `signal` messages verbatim and sends `peer-joined`, `peer-left`, `expired`, `switch-to-download`. It holds no file data. A room lives as long as its sender's socket. The sender can fall back to upload by passing `liveKey` + `liveToken` to `complete`, which claims the room and tells the receiver to switch to download.
 - **Rate limits.** `WINDOWS` in `src/middleware/rateLimits.ts` (`auth`, `lookup`, `miss`, `upload`, `ws`). `miss` counts only failed requests on key routes; the hub keeps its own counter with the same limit for `not-found` joins (`not-live` is a hit and is free). The hub keys its windows with `ipKeyGenerator` like the HTTP limiters, so IPv6 counts per /56. Per-IP limits need `TRUST_PROXY` behind a proxy.
-- **Config in production.** `BASE_URL` (otherwise share URLs come from the `Host` header), `TRUST_PROXY`, `COOKIE_SECURE`, `APP_SECRET`.
+- **Config in production.** `BASE_URL` (otherwise share and email links come from the `Host` header, never `X-Forwarded-Host`; `loadConfig` throws when `TRUST_PROXY` is set without it), `TRUST_PROXY`, `COOKIE_SECURE`, `APP_SECRET`. Tests that set `TRUST_PROXY` must also pass a `BASE_URL`.
 
 ## Testing
 
