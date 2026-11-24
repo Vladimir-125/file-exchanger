@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type http from 'node:http';
 import type { Duplex } from 'node:stream';
+import { ipKeyGenerator } from 'express-rate-limit';
 import proxyAddr from 'proxy-addr';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import type { Config } from '../config.ts';
@@ -27,7 +28,8 @@ type Room = {
   bound: boolean; // claimed by a fallback upload: no longer expires
 };
 
-type Peer = { ip: string; alive: boolean; role?: 'sender' | 'receiver'; room?: Room };
+/** `client` is the rate-limit key of the peer's IP: IPv6 by /56 prefix, as the HTTP limiters count. */
+type Peer = { client: string; alive: boolean; role?: 'sender' | 'receiver'; room?: Room };
 
 type Msg = { type: string; key?: unknown; data?: unknown };
 
@@ -41,7 +43,7 @@ function compileTrust(val: Config['trustProxy']): (addr: string, i: number) => b
   return proxyAddr.compile([]);
 }
 
-/** Sliding-window counter per client IP. */
+/** Sliding-window counter per client key. */
 function slidingWindow(now: () => number, windowMs: number, limit: number) {
   const hits = new Map<string, number[]>();
   const recent = (ip: string) => {
@@ -93,7 +95,10 @@ export function createSignaling({
   isStoredKey: (key: string) => boolean;
   /** `host` messages per client IP per `WINDOWS.ws` window (1 h). */
   rateLimitPerHour: number;
-  /** `not-found`/`not-live` join replies per client IP per `WINDOWS.miss` window, like the HTTP miss limiter. */
+  /**
+   * `not-found` join replies per client per `WINDOWS.miss` window, like the HTTP miss limiter (a
+   * separate counter). `not-live` is a hit: the key exists, as a stored transfer.
+   */
   joinMissPerWindow: number;
   heartbeatMs?: number;
 }) {
@@ -150,8 +155,8 @@ export function createSignaling({
 
   function onHost(ws: WebSocket, peer: Peer) {
     if (peer.role) return send(ws, { type: 'error', code: 'bad_state' });
-    if (hostLimit.full(peer.ip)) return send(ws, { type: 'error', code: 'rate_limited' });
-    hostLimit.hit(peer.ip);
+    if (hostLimit.full(peer.client)) return send(ws, { type: 'error', code: 'rate_limited' });
+    hostLimit.hit(peer.client);
     const key = generateKey(config.keyLength, (k) => rooms.has(k) || isStoredKey(k));
     const liveToken = randomToken();
     const room: Room = {
@@ -169,15 +174,16 @@ export function createSignaling({
 
   function onJoin(ws: WebSocket, peer: Peer, input: unknown) {
     if (peer.role) return send(ws, { type: 'error', code: 'bad_state' });
-    if (joinMisses.full(peer.ip)) {
+    if (joinMisses.full(peer.client)) {
       send(ws, { type: 'error', code: 'rate_limited' });
       return ws.close(1008);
     }
     const key = normalizeKey(input, config.keyLength);
     const room = key ? rooms.get(key) : undefined;
     if (!room) {
-      joinMisses.hit(peer.ip);
-      return send(ws, { type: key && isStoredKey(key) ? 'not-live' : 'not-found' });
+      if (key && isStoredKey(key)) return send(ws, { type: 'not-live' });
+      joinMisses.hit(peer.client);
+      return send(ws, { type: 'not-found' });
     }
     if (room.receiver) return send(ws, { type: 'busy' });
     room.receiver = ws;
@@ -209,7 +215,7 @@ export function createSignaling({
   }
 
   function onConnection(ws: WebSocket, req: http.IncomingMessage) {
-    const peer: Peer = { ip: proxyAddr(req, trust), alive: true };
+    const peer: Peer = { client: ipKeyGenerator(proxyAddr(req, trust)), alive: true };
     peers.set(ws, peer);
     ws.on('pong', () => {
       peer.alive = true;
