@@ -34,6 +34,10 @@ mysql -u <user> -p <database> < schema.sql
 npm start
 ```
 
+Upgrading an existing database from the old version? Run
+`mysql -u <user> -p <database> < migrations/001_widen_password_hash.sql` once:
+the new password hashes don't fit the old columns.
+
 If `EMAIL`/`PASSWD` are not set, signup confirmation links are printed to the
 server console instead of being emailed. For Gmail use an
 [app password](https://myaccount.google.com/apppasswords).

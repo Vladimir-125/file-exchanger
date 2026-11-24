@@ -2,8 +2,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const zlib = require('zlib');
-const { pipeline } = require('stream/promises');
-const { Readable } = require('stream');
+const { pipeline: pipelineAsync } = require('stream/promises');
+const { Readable, pipeline } = require('stream');
 
 const scryptAsync = (password, salt, keylen) =>
 	new Promise((resolve, reject) =>
@@ -55,7 +55,7 @@ async function encryptToFile(buffer, password, filePath) {
 	const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
 	const out = fs.createWriteStream(filePath);
 	out.write(Buffer.concat([MAGIC, salt, iv]));
-	await pipeline(Readable.from([buffer]), zlib.createGzip(), cipher, out, { end: false });
+	await pipelineAsync(Readable.from([buffer]), zlib.createGzip(), cipher, out, { end: false });
 	await new Promise((resolve, reject) => out.end(cipher.getAuthTag(), (err) => (err ? reject(err) : resolve())));
 }
 
@@ -94,13 +94,13 @@ async function decryptStream(filePath, password) {
 	return chain(body, decipher, zlib.createUnzip());
 }
 
-// Pipes streams together and forwards errors to the last one.
+// Pipes streams together; an error or early destroy anywhere tears down all of them
+// (so a client disconnect closes the file handle). Errors surface on the last stream.
 function chain(...streams) {
 	const last = streams[streams.length - 1];
-	for (let i = 0; i < streams.length - 1; i++) {
-		streams[i].on('error', (err) => last.destroy(err));
-		streams[i].pipe(streams[i + 1]);
-	}
+	pipeline(...streams, (err) => {
+		if (err && !last.destroyed) last.destroy(err);
+	});
 	return last;
 }
 

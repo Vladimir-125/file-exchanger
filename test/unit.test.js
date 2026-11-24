@@ -6,8 +6,9 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { hashPassword, verifyPassword, isLegacyHash, encryptToFile, decryptStream } = require('../src/security');
-const { safeFileName, parseKey } = require('../src/fileStore');
+const { safeFileName, parseKey, createFileStore } = require('../src/fileStore');
 const { formatDuration } = require('../src/routes/files');
+const config = require('../src/config');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fx-unit-'));
 const readAll = async (stream) => {
@@ -83,4 +84,51 @@ test('parseKey accepts only digits', () => {
 test('formatDuration', () => {
 	assert.equal(formatDuration(24 * 3600), '24:00:00');
 	assert.equal(formatDuration(3725), '01:02:05');
+});
+
+test('an upload is not visible until fully written and stored', async () => {
+	let releaseInsert;
+	const queries = [];
+	const db = {
+		async query(sql, params) {
+			queries.push(sql);
+			if (sql.startsWith('insert')) await new Promise((r) => { releaseInsert = r; });
+			return [[]];
+		}
+	};
+	const store = createFileStore({ db, uploadsDir: fs.mkdtempSync(path.join(tmp, 's-')), keyLen: 4, storeSeconds: 60 });
+	await store.load();
+	const saving = store.save({ buffer: Buffer.from('data'), originalname: 'a.txt', password: 'pw' });
+	while (!releaseInsert) await new Promise((r) => setImmediate(r));
+	for (let k = 1000; k <= 9999; k++) assert.equal(store.find(k), undefined);
+	releaseInsert();
+	const record = await saving;
+	assert.equal(store.find(record.file_id), record);
+	assert.match(record.password_hash, /^scrypt\$/);
+});
+
+test('decrypted stream releases the file when destroyed early', async () => {
+	const file = path.join(tmp, 'c.enc');
+	await encryptToFile(crypto.randomBytes(5_000_000), 'pw', file);
+	const before = fs.readdirSync('/proc/self/fd').length;
+	const plain = await decryptStream(file, 'pw');
+	await new Promise((r) => plain.once('data', r));
+	plain.destroy();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(fs.readdirSync('/proc/self/fd').length, before);
+});
+
+test('TRUST_PROXY parsing', () => {
+	const parse = (v) => {
+		delete require.cache[require.resolve('../src/config')];
+		process.env.TRUST_PROXY = v;
+		try { return require('../src/config').trustProxy; } finally { delete process.env.TRUST_PROXY; }
+	};
+	assert.equal(parse(''), false);
+	assert.equal(parse('false'), false);
+	assert.equal(parse('0'), false);
+	assert.equal(parse('true'), 1);
+	assert.equal(parse('2'), 2);
+	assert.equal(parse('loopback'), 'loopback');
+	assert.ok(config);
 });

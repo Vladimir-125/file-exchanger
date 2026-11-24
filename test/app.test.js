@@ -9,6 +9,7 @@ const config = require('../src/config');
 const { createPool } = require('../src/db');
 const { createFileStore } = require('../src/fileStore');
 const { createApp } = require('../src/app');
+const { formatDuration } = require('../src/routes/files');
 
 let db, server, base, skip = false;
 const sentMail = [];
@@ -25,8 +26,9 @@ before(async () => {
 	}
 	const testConfig = {
 		...config,
-		uploadsDir: fs.mkdtempSync(path.join(os.tmpdir(), 'fx-it-')),
-		rateLimits: { auth: 1000, key: 1000 }
+		// dot-directory in the path: Express 5's `send` must still serve files from it
+		uploadsDir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fx-it-')), '.hidden', 'uploads'),
+		rateLimits: { auth: 1000, key: 1000, upload: 1000 }
 	};
 	const store = createFileStore({ ...testConfig, db });
 	await store.load();
@@ -63,7 +65,7 @@ test('plain upload and download', async (t) => {
 	if (skip) return t.skip(skip);
 	const { key, time } = await uploadFile('hello.txt', 'hello plain');
 	assert.match(String(key), /^\d{4}$/);
-	assert.equal(time, '24:00:00');
+	assert.equal(time, formatDuration(config.storeSeconds));
 
 	assert.equal(await (await fetch(`${base}/validate`, { method: 'POST', body: form({ key }) })).text(), 'ok');
 	const res = await fetch(`${base}/download?key=${key}`);
@@ -131,4 +133,20 @@ test('signup input is not interpreted as SQL', async (t) => {
 	if (skip) return t.skip(skip);
 	const res = await fetch(`${base}/login`, { method: 'POST', body: form({ email: "' or '1'='1", password: 'x' }) });
 	assert.equal(await res.text(), 'Wrong email or password!');
+});
+
+test('requests without a form body are client errors, not crashes', async (t) => {
+	if (skip) return t.skip(skip);
+	const login = await fetch(`${base}/login`, { method: 'POST' });
+	assert.equal(await login.text(), 'Wrong email or password!');
+	const signup = await fetch(`${base}/signup`, { method: 'POST' });
+	assert.equal(signup.status, 400);
+});
+
+test('malformed uploads return 400', async (t) => {
+	if (skip) return t.skip(skip);
+	const fd = new FormData();
+	fd.append('wrongfield', new Blob(['x']), 'x.txt');
+	assert.equal((await fetch(`${base}/uploadfile`, { method: 'POST', body: fd })).status, 400);
+	assert.equal((await fetch(`${base}/uploadfile`, { method: 'POST', body: new FormData() })).status, 400);
 });

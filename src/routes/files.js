@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const multer = require('multer');
+const { pipeline } = require('stream');
 const { verifyPassword, decryptStream } = require('../security');
 
 const NOT_FOUND_HTML = '<script>alert(\'File does not exist!\');document.location.href="/";</script>';
@@ -37,12 +38,17 @@ function passwordPromptPage(fileId) {
 </html>`;
 }
 
-function fileRoutes({ store, config, limiter }) {
+// serve relative to the file's own folder so dot-directories higher up the path don't trip `send`
+function sendPlain(res, filePath) {
+	res.download(path.basename(filePath), { root: path.dirname(filePath) });
+}
+
+function fileRoutes({ store, config, limiter, uploadLimiter }) {
 	const router = express.Router();
 	const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: config.maxUploadBytes, files: 1 } });
 	const storeTime = formatDuration(config.storeSeconds);
 
-	router.post('/uploadfile', upload.single('file'), async (req, res) => {
+	router.post('/uploadfile', uploadLimiter, upload.single('file'), async (req, res) => {
 		if (!req.file) return res.status(400).end('Please upload a file');
 		const password = req.body?.password ? String(req.body.password) : '';
 		const record = await store.save({
@@ -70,7 +76,7 @@ function fileRoutes({ store, config, limiter }) {
 		if (!record) return res.end(NOT_FOUND_HTML);
 
 		const filePath = await store.filePath(record);
-		if (!record.password_hash) return res.download(filePath);
+		if (!record.password_hash) return sendPlain(res, filePath);
 		if (passwd === undefined) return res.end('Enter password');
 		if (!(await verifyPassword(String(passwd), record.password_hash))) {
 			return res.end('<script>alert(\'Wrong password!\')</script>');
@@ -79,18 +85,17 @@ function fileRoutes({ store, config, limiter }) {
 		const plain = await decryptStream(filePath, String(passwd));
 		const filename = path.basename(filePath).replace(/\.enc$/, '');
 		res.attachment(filename); // sets Content-Disposition (non-ASCII safe) and Content-Type
-		plain.on('error', (err) => {
-			console.error('Decrypt error:', err.message);
-			res.destroy(err);
+		// pipeline destroys the file/decipher streams if the client disconnects
+		pipeline(plain, res, (err) => {
+			if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error('Decrypt error:', err.message);
 		});
-		plain.pipe(res);
 	});
 
 	router.get('/download', limiter, async (req, res) => {
 		const record = store.find(req.query.key);
 		if (!record) return res.end(NOT_FOUND_HTML);
 		if (record.password_hash) return res.end(passwordPromptPage(record.file_id));
-		res.download(await store.filePath(record));
+		sendPlain(res, await store.filePath(record));
 	});
 
 	return router;

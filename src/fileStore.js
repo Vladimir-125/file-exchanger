@@ -19,6 +19,7 @@ function parseKey(rawKey) {
 
 function createFileStore({ db, uploadsDir, keyLen, storeSeconds }) {
 	let records = new Map(); // file_id -> { file_id, creation_date, password_hash }
+	const pending = new Set(); // keys reserved by uploads still being written
 
 	async function load() {
 		const [rows] = await db.query('select * from files');
@@ -28,16 +29,16 @@ function createFileStore({ db, uploadsDir, keyLen, storeSeconds }) {
 
 	function newKey() {
 		const min = 10 ** (keyLen - 1);
-		if (records.size >= min * 9) throw new Error('No free download keys left');
+		if (records.size + pending.size >= min * 9) throw new Error('No free download keys left');
 		while (true) {
 			const id = crypto.randomInt(min, min * 10);
-			if (!records.has(id)) return id;
+			if (!records.has(id) && !pending.has(id)) return id;
 		}
 	}
 
 	async function save({ buffer, originalname, password }) {
 		const record = { file_id: newKey(), creation_date: new Date(), password_hash: '' };
-		records.set(record.file_id, record); // reserve the key while writing
+		pending.add(record.file_id); // reserve the key; not visible to find() until complete
 
 		try {
 			const dir = path.join(uploadsDir, String(record.file_id));
@@ -51,10 +52,13 @@ function createFileStore({ db, uploadsDir, keyLen, storeSeconds }) {
 			}
 			await db.query('insert into files (file_id, creation_date, password_hash) values (?, ?, ?)',
 				[record.file_id, record.creation_date, record.password_hash]);
+			records.set(record.file_id, record);
 			return record;
 		} catch (err) {
 			await remove(record.file_id).catch(() => {});
 			throw err;
+		} finally {
+			pending.delete(record.file_id);
 		}
 	}
 
