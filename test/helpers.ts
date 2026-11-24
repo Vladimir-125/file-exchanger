@@ -25,6 +25,7 @@ export async function makeTestApp(
     now?: () => number;
     configEnv?: Record<string, string>;
     rateLimits?: Partial<Record<LimitName, number>>;
+    heartbeatMs?: number;
   } = {},
 ): Promise<TestApp> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fx-test-'));
@@ -46,6 +47,7 @@ export async function makeTestApp(
     now,
     isStoredKey: (k) => transfers.hasReadyKey(k),
     rateLimitPerHour: limits.ws,
+    heartbeatMs: opts.heartbeatMs,
   });
   transfers = createTransferService({ db, config, now, signaling });
   const deps: Deps = {
