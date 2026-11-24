@@ -1,85 +1,122 @@
-# file-exchanger
-	
-“Send me file” aims to provide another better and more comfortable way for sending and receiving files between various devises. This platform provides both web and desktop application so that clients would be able to send and receive any files only with the access to the Internet. Users can send files from any device to any other device if they have access to the Internet and a browser. For the convenience of desktop users, I have developed desktop version of “Send me file”. There is two ways of sending a file. 
+# File Exchanger
 
-First, allows you to quickly send any file to the server which stores it some specific amount of time (24 hours by default). The server then provides key (4 digits. Can be increased to any other length later when the number of users reaches a point when generating a new key will take long time) to be used to download the file. It also provides QR code that can be used to download file. QR code has a direct link to download the file.
+A small self-hosted, ad-free service for sending files. No trackers, no analytics, no third-party scripts: everything the page needs is served from this app.
 
-Second, is secure method. It allows users to send files adding a password to them. The files are sent to the server on a secure https channel and stored in encrypted state on the server. The password used for encrypting the file deleted form the server immediately after encryption. The users are prompted to enter the proper password as well as the key of the file in order to download the file. The system is able to check if user enters the right password. When users follow the link encrypted in QR code, they still prompted to enter the password in case the file was encrypted. 
+- **Send with a key, link or QR code.** Pick files, get a short key (6 characters by default), a link and a QR code. The receiver types the key or opens the link.
+- **Direct transfer.** The sender can keep the page open and the file goes straight to the receiver over WebRTC, without being stored on the server. If a direct connection cannot be made, the sender's browser falls back to uploading the file instead.
+- **Stored transfers.** Uploaded files are kept for 24 hours by default and then removed.
+- **Protected files.** Signed-in users can add a password to a transfer. Files are then encrypted at rest (AES-256-GCM, key derived from the password with scrypt) and the password is never stored. The receiver enters the password to download.
+- **Accounts.** Sign-up with email confirmation. An account lists and deletes its own transfers and can set passwords. Sending and receiving without an account is possible.
 
-First simple method does not need any registration process, and anyone can send and receive files without restrictions. The second method, however, requires user registration or installation of a special desktop app. Secure method was designed only for VIP users and later was reduced to simple registration or software installation. Download of both encrypted and not encrypted files can be performed without need of logging to the system.
+Stack: Node 22, TypeScript (run with `tsx`), Express 5, SQLite (`better-sqlite3` + Drizzle ORM), `ws` for WebSocket signaling, plain HTML/JS frontend.
 
-First simple method does not need any registration process, and anyone can send and receive files without restrictions. The second method, however, requires user registration or installation of a special desktop app. Secure method was designed only for VIP users and later was reduced to simple registration or software installation. Download of both encrypted and not encrypted files can be performed without need of logging to the system.
-
-
-## Getting Started
-
-### Quick start with Docker
+## Quick start (Docker)
 
 ```
-cp .env.example .env        # optional: set SESSION_SECRET, EMAIL/PASSWD, ...
+cp .env.example .env     # optional, see Configuration
 docker compose up -d --build
 ```
 
-The app runs on http://localhost:3000 (change with `APP_PORT`). MySQL and the
-uploaded files live in Docker volumes; the schema is loaded on first start.
+The app listens on http://localhost:3000 (change the host port with `APP_PORT`). The database and uploaded files live in the `data` volume, mounted at `/data` in the container. There is no separate database service.
 
-### Running locally
+For anything public, set `APP_SECRET` (`openssl rand -hex 32`) and `BASE_URL` in `.env`, see the next sections.
 
-Requires Node.js 20+ and MySQL 8.
+## Local development
+
+Requires Node.js 22 (see `.nvmrc`).
 
 ```
 npm install
-cp .env.example .env        # point MYSQL_* at your database
-mysql -u <user> -p <database> < schema.sql
-npm start
+cp .env.example .env
+npm run dev              # tsx watch, http://localhost:3000
 ```
 
-Upgrading an existing database from the old version? Run
-`mysql -u <user> -p <database> < migrations/001_widen_password_hash.sql` once:
-the new password hashes don't fit the old columns.
+`npm start` runs the server once without watching. Data goes to `./data` by default.
 
-If `EMAIL`/`PASSWD` are not set, signup confirmation links are printed to the
-server console instead of being emailed. For Gmail use an
-[app password](https://myaccount.google.com/apppasswords).
+If `SMTP_URL` is not set, email is disabled and sign-up confirmation links are printed to the server console.
 
-### Configuration
+## Configuration
 
-All settings are environment variables (see [.env.example](.env.example)):
+All settings are environment variables, read from the process environment or a `.env` file (see [.env.example](.env.example)). Sizes in MB are 2^20 bytes.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port |
-| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DATABASE` | | Database connection |
-| `SESSION_SECRET` | random per start | Session cookie signing key; set it in production |
-| `EMAIL` / `PASSWD` | | Gmail account used for confirmation emails |
-| `BASE_URL` | request host | Public URL used in confirmation links |
-| `COOKIE_SECURE` / `TRUST_PROXY` | off | Enable when served over HTTPS behind a proxy |
-| `MAX_UPLOAD_MB` | `100` | Upload size limit |
-| `STORE_HOURS` | `24` | How long files are kept |
+| `DATA_DIR` | `./data` (`/data` in Docker) | SQLite database and stored files |
+| `BASE_URL` | empty | Public URL used in share links and emails, e.g. `https://files.example.com`. Empty: built from the request `Host` header |
+| `APP_SECRET` | empty | 64 hex characters (`openssl rand -hex 32`). Signs sessions and download grants. Empty: random per start, so sessions and grants reset on restart |
+| `TRUST_PROXY` | empty (off) | Proxy hops to trust: `true` or a number (one hop is `1`), or an address list such as `loopback` |
+| `COOKIE_SECURE` | `false` | Set to `true` when served over HTTPS |
+| `TRANSFER_TTL_HOURS` | `24` | Hours a stored transfer stays downloadable |
+| `LIVE_KEY_TTL_MINUTES` | `10` | Minutes a direct-transfer key waits for a receiver |
+| `KEY_LENGTH` | `6` | Length of share keys (5 to 12) |
+| `MAX_FILE_MB` | `2000` | Largest single file |
+| `MAX_FILES_PER_TRANSFER` | `20` | Files in one transfer |
+| `MAX_TRANSFER_MB` | `4000` | Total size of one transfer |
+| `STORAGE_CAP_GB` | `50` | Disk budget for stored transfers; new uploads are refused beyond it |
+| `CHUNK_MB` | `50` | Upload chunk size, at most 95 |
+| `UPLOAD_ABANDON_MINUTES` | `60` | Minutes before an unfinished upload is discarded |
+| `SMTP_URL` | empty | SMTP connection URL, e.g. `smtps://user:pass@smtp.example.com`. Empty: email disabled |
+| `MAIL_FROM` | `File Exchanger <no-reply@localhost>` | From header of outgoing mail |
+| `TURN_URL` | empty | Optional TURN relay for direct transfers |
+| `TURN_USERNAME` | empty | TURN username |
+| `TURN_CREDENTIAL` | empty | TURN credential |
 
-### Tests
+### Chunked upload
+
+Browsers upload each file in chunks of `CHUNK_MB` (default 50, at most 95), one request per chunk. This keeps every request below the 100 MB body limit of tunnels and proxies such as Cloudflare, so large files go through. Chunks are written straight to disk, and the server assembles nothing in memory.
+
+### ICE servers (direct transfers)
+
+Direct transfers use WebRTC. By default the only ICE server is the public STUN server `stun:stun.l.google.com:19302`; there is no setting to replace or disable it. Add a TURN relay with `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL`; it is offered in addition to STUN. Without TURN, some networks (for example behind symmetric NAT) cannot connect directly, and the transfer falls back to uploading the file.
+
+## Running behind a reverse proxy or tunnel
+
+Behind nginx, Caddy, cloudflared or similar:
+
+- `BASE_URL=https://files.example.com`. Required in production. Without it, share URLs and email links are built from the request `Host` header.
+- `TRUST_PROXY=1` when exactly one proxy (cloudflared, a single reverse proxy) sits in front, so the per-IP rate limits see real client IPs instead of the proxy's. Leave it empty when the app is exposed directly, otherwise clients can spoof their IP with `X-Forwarded-For`.
+- `COOKIE_SECURE=true` once the site is served over HTTPS.
+- `APP_SECRET` set, so sessions survive restarts.
+- The proxy must pass WebSocket upgrades on `/ws` and allow request bodies of at least `CHUNK_MB`.
+
+### Rate limits
+
+Limits are per client IP and fixed in the code:
+
+| Limiter | Limit | What it covers |
+| --- | --- | --- |
+| `auth` | 20 per 15 min | sign-up and login |
+| `lookup` | 60 per minute | transfer lookups and unlock attempts |
+| `miss` | 30 failed requests per 15 min | any route taking a transfer key, and failed WebSocket joins; stops key guessing |
+| `upload` | 30 per hour | creating transfers |
+| `ws` | 30 per hour | hosting direct transfers over WebSocket |
+
+## Tests
 
 ```
 npm test
 ```
 
-Unit tests always run; the integration tests use the database from `.env` and
-are skipped if it is unreachable.
+Runs `tsc --noEmit`, then the Node test runner over `test/**/*.test.ts`.
 
-### Project layout
+## Project layout
 
 ```
-server.js            entry point
-src/config.js        environment configuration
-src/app.js           express app (sessions, rate limits, error handler)
-src/routes/auth.js   signup, email confirmation, login
-src/routes/files.js  upload, validate, download
-src/fileStore.js     file index (MySQL) + uploads directory, expiry
-src/security.js      scrypt password hashing, AES-256-GCM file encryption
-src/mailer.js        nodemailer (Gmail) or console fallback
-views/               HTML pages
-public/              static assets
-schema.sql           database schema
+src/server.ts            entry: config, database, signaling, cleanup timer, graceful shutdown
+src/app.ts               Express app: sessions, API routers, static files
+src/config.ts            environment parsing
+src/routes/              auth, me, config, transfers (upload, download)
+src/services/            transfers, downloads (file and zip streams), users, mailer
+src/realtime/signaling.ts WebSocket hub pairing sender and receiver
+src/middleware/          rate limits, auth guard
+src/db/                  Drizzle schema, SQLite client, session store
+src/lib/                 keys, crypto, file names
+drizzle/                 generated SQL migrations
+public/                  static frontend (no build step)
+test/                    tests; test/helpers.ts has makeTestApp()
 ```
 
-Check out [Demo](http://13.125.60.5/ "Open demo in new tab")
+## License
+
+Apache-2.0, see [LICENSE](LICENSE).
