@@ -38,6 +38,9 @@ export function createApp(deps: Deps, limits: RateLimits = createRateLimits()): 
   const auth = authRouters(deps, limits);
   const api = [configRouter(deps), auth.api];
   app.use('/api', ...api);
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: { code: 'not_found', message: 'Not found' } });
+  });
   app.use(auth.confirm);
 
   app.use(express.static(publicDir));
