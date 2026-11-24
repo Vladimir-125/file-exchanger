@@ -17,7 +17,7 @@ cp .env.example .env     # optional, see Configuration
 docker compose up -d --build
 ```
 
-The app listens on http://localhost:3000 (change the host port with `APP_PORT`). The port is published on `127.0.0.1` only, so it is not reachable from other machines; see [Running behind a reverse proxy or tunnel](#running-behind-a-reverse-proxy-or-tunnel). The database and uploaded files live in the `data` volume, mounted at `/data` in the container. There is no separate database service.
+The app listens on http://localhost:3000 (change the host port with `APP_PORT`, not `PORT`: inside the container the app always listens on 3000). The port is published on `127.0.0.1` only, so it is not reachable from other machines; see [Running behind a reverse proxy or tunnel](#running-behind-a-reverse-proxy-or-tunnel). The database and uploaded files live in the `data` volume, mounted at `/data` in the container. There is no separate database service.
 
 For anything public, set `APP_SECRET` (`openssl rand -hex 32`) and `BASE_URL` in `.env`, see the next sections.
 
@@ -41,7 +41,7 @@ All settings are environment variables, read from the process environment or a `
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `3000` | HTTP port |
+| `PORT` | `3000` | HTTP port (without Docker; with Docker use `APP_PORT`, `PORT` is pinned to 3000) |
 | `DATA_DIR` | `./data` (`/data` in Docker) | SQLite database and stored files |
 | `BASE_URL` | empty | Public URL used in share links and emails, e.g. `https://files.example.com`. Empty: built from the request `Host` header (local use only); required when `TRUST_PROXY` is set |
 | `APP_SECRET` | empty | 64 hex characters (`openssl rand -hex 32`). Signs sessions and download grants. Empty: random per start, so sessions and grants reset on restart |
