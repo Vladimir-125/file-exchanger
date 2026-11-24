@@ -1,0 +1,61 @@
+import session from 'express-session';
+import { eq } from 'drizzle-orm';
+import type { Db } from './client.ts';
+import { sessions } from './schema.ts';
+
+const DEFAULT_TTL_MS = 3600_000;
+
+export class DrizzleSessionStore extends session.Store {
+  constructor(
+    private readonly db: Db,
+    private readonly now: () => number = Date.now,
+  ) {
+    super();
+  }
+
+  private expiryOf(sess: session.SessionData): Date {
+    const expires = sess.cookie?.expires;
+    return expires ? new Date(expires) : new Date(this.now() + DEFAULT_TTL_MS);
+  }
+
+  override get(sid: string, cb: (err?: unknown, session?: session.SessionData | null) => void): void {
+    try {
+      const row = this.db.select().from(sessions).where(eq(sessions.sid, sid)).get();
+      if (!row) return cb(null, null);
+      if (row.expiresAt.getTime() <= this.now()) {
+        this.db.delete(sessions).where(eq(sessions.sid, sid)).run();
+        return cb(null, null);
+      }
+      cb(null, JSON.parse(row.data) as session.SessionData);
+    } catch (err) {
+      cb(err);
+    }
+  }
+
+  override set(sid: string, sess: session.SessionData, cb?: (err?: unknown) => void): void {
+    try {
+      const values = { data: JSON.stringify(sess), expiresAt: this.expiryOf(sess) };
+      this.db.insert(sessions).values({ sid, ...values }).onConflictDoUpdate({ target: sessions.sid, set: values }).run();
+      cb?.();
+    } catch (err) {
+      cb?.(err);
+    }
+  }
+
+  override destroy(sid: string, cb?: (err?: unknown) => void): void {
+    try {
+      this.db.delete(sessions).where(eq(sessions.sid, sid)).run();
+      cb?.();
+    } catch (err) {
+      cb?.(err);
+    }
+  }
+
+  override touch(sid: string, sess: session.SessionData, cb?: () => void): void {
+    try {
+      this.db.update(sessions).set({ expiresAt: this.expiryOf(sess) }).where(eq(sessions.sid, sid)).run();
+    } finally {
+      cb?.();
+    }
+  }
+}
