@@ -19,11 +19,31 @@ export type Deps = { config: Config; db: Db; mailer: Mailer; now: () => number; 
 const publicDir = fileURLToPath(new URL('../public', import.meta.url));
 const KEY_PATH = /^[A-Za-z0-9-]{4,16}$/;
 
+/**
+ * Everything comes from this origin. QR codes are data: images, received direct files blob: URLs.
+ * ws:/wss: are listed because not every browser lets 'self' cover a same-origin WebSocket.
+ */
+const CSP = [
+  "default-src 'self'",
+  "img-src 'self' data: blob:",
+  "connect-src 'self' ws: wss:",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join('; ');
+
+const securityHeaders: express.RequestHandler = (_req, res, next) => {
+  res.set({ 'Content-Security-Policy': CSP, 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' });
+  next();
+};
+
 export function createApp(deps: Deps, limits: RateLimits = createRateLimits()): express.Express {
   const { config } = deps;
   const app = express();
   app.set('trust proxy', config.trustProxy);
   app.disable('x-powered-by');
+  app.use(securityHeaders);
 
   app.use(
     session({

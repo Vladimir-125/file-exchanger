@@ -194,6 +194,23 @@ describe('account edge cases', () => {
     }
   });
 
+  it('pages and API responses carry the security headers', async () => {
+    const csp =
+      "default-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'; " +
+      "base-uri 'none'; form-action 'self'; object-src 'none'";
+    const t = await makeTestApp();
+    try {
+      for (const url of [`${t.base}/`, `${t.base}/K7PX3M`, `${t.base}/api/config`, `${t.base}/api/nope`]) {
+        const res = await fetch(url);
+        assert.equal(res.headers.get('content-security-policy'), csp, url);
+        assert.equal(res.headers.get('referrer-policy'), 'no-referrer', url);
+        assert.equal(res.headers.get('x-content-type-options'), 'nosniff', url);
+      }
+    } finally {
+      await t.close();
+    }
+  });
+
   it('unknown /api paths are a JSON 404; /confirm/x is the token page', async () => {
     const t = await makeTestApp();
     try {
