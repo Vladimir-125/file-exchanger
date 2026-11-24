@@ -3,7 +3,7 @@
 import { friendlyError } from './api.js';
 import { createPeer, openSignaling, sendFiles, wsUrl } from './direct.js';
 import { renderQr } from './qr.js';
-import { $, copyText, countdown, fileRow, h, onLeave, progress, setText, showView } from './ui.js';
+import { $, copyText, countdown, currentView, fileRow, h, onLeave, progress, setText, showView } from './ui.js';
 import { checkLimits, formatBytes, uploadTransfer, xhrPutChunk } from './upload.js';
 
 const CONNECT_TIMEOUT_MS = 15_000; // after the receiver joins
@@ -127,16 +127,22 @@ async function upload() {
   setText('send-error', '');
   setBusy(true);
   $('send-progress').hidden = false;
-  const onProgress = progress('send-bar', 'send-progress-text', 'Uploaded');
+  const view = currentView();
+  const mine = () => currentView() === view; // still on the Send view this upload started from
+  const bar = progress('send-bar', 'send-progress-text', 'Uploaded');
+  const onProgress = (sent, total) => mine() && bar(sent, total);
   try {
     const password = app.user ? $('send-password').value : '';
     const ready = await uploadTransfer(selected, { password: password || undefined, onProgress, putChunk: xhrPutChunk });
-    selected = [];
-    $('send-password').value = '';
     $('send-progress').hidden = true;
-    showResult(ready);
+    if (mine()) {
+      selected = [];
+      $('send-password').value = '';
+      showResult(ready);
+    }
   } catch (err) {
-    setText('send-error', friendlyError(err));
+    $('send-progress').hidden = true;
+    if (mine()) setText('send-error', friendlyError(err));
   } finally {
     setBusy(false);
   }
@@ -173,7 +179,10 @@ function startDirect(files) {
   $('direct-url').value = '';
   $('direct-qr').replaceChildren();
   setText('direct-expiry', '');
+  setText('direct-copy-status', '');
   setText('direct-status', 'Connecting to the server...');
+  const view = currentView();
+  const mine = () => currentView() === view; // false once this session's view was left
 
   // phase: hosting -> waiting -> connecting -> sending -> done; or uploading (fallback) / failed
   let phase = 'hosting';
@@ -184,14 +193,16 @@ function startDirect(files) {
   let stopCountdown = () => {};
   const onProgress = progress('direct-bar', 'direct-progress-text', 'Sent');
 
-  const status = (text) => setText('direct-status', text);
+  // a stale session (e.g. a fallback upload finishing after the view was left) never writes the page
+  const status = (text) => mine() && setText('direct-status', text);
   const fail = (text) => {
     phase = 'failed';
     dropPeer();
+    sig.close();
+    if (!mine()) return;
     status('');
     setText('direct-error', text);
     $('direct-fallback').hidden = true;
-    sig.close();
   };
   function dropPeer() {
     generation++;
@@ -213,7 +224,7 @@ function startDirect(files) {
         const url = shareUrl(msg.key);
         setText('direct-key', msg.key);
         $('direct-url').value = url;
-        $('btn-direct-copy').onclick = () => copyText(url, $('direct-url'), $('direct-status'));
+        $('btn-direct-copy').onclick = () => copyText(url, $('direct-url'), $('direct-copy-status'));
         renderQr($('direct-qr'), url);
         wait(msg.expiresAt);
         status('Waiting for the receiver...');
@@ -236,6 +247,7 @@ function startDirect(files) {
         status('The receiver left. Waiting for the receiver...');
         break;
       case 'expired':
+        if (phase === 'uploading') break; // a claimed key does not expire; complete decides
         fail('The key expired before anyone connected. Start again to get a new key.');
         break;
       case 'error':
@@ -272,6 +284,7 @@ function startDirect(files) {
   }
 
   function offerFallback() {
+    if (!mine()) return;
     $('direct-fallback').hidden = false;
     status('');
     $('btn-fallback').focus();
@@ -300,6 +313,7 @@ function startDirect(files) {
 
   $('btn-fallback-wait').onclick = () => {
     $('direct-fallback').hidden = true;
+    setText('direct-error', '');
     status('Still trying to connect directly...');
     clearTimeout(timer);
     timer = setTimeout(() => phase === 'connecting' && offerFallback(), CONNECT_TIMEOUT_MS);
@@ -308,13 +322,16 @@ function startDirect(files) {
   // the socket stays open until complete returns: the server keeps the live key for us meanwhile
   $('btn-fallback').onclick = async () => {
     const problem = checkLimits(files, app.config);
-    if (problem) return fail(problem);
+    // too much to store: the direct session stays up and "Keep trying" is still offered
+    if (problem) return setText('direct-error', problem);
+    setText('direct-error', '');
     phase = 'uploading';
     dropPeer();
     $('direct-fallback').hidden = true;
     $('direct-progress').hidden = false;
     status('Uploading to the server instead...');
-    const onUpload = progress('direct-bar', 'direct-progress-text', 'Uploaded');
+    const bar = progress('direct-bar', 'direct-progress-text', 'Uploaded');
+    const onUpload = (sent, total) => mine() && bar(sent, total);
     try {
       const ready = await uploadTransfer(files, {
         liveKey: live.key,
@@ -324,6 +341,7 @@ function startDirect(files) {
       });
       phase = 'done';
       sig.close();
+      if (!mine()) return; // the person moved on: the upload still finished, the page stays put
       if (selected.length === files.length && files.every((f, i) => selected[i] === f)) selected = [];
       showResult(ready);
     } catch (err) {

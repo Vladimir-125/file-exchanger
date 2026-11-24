@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkLimits, planChunks, uploadTransfer } from '../public/js/upload.js';
-import { decodeHeader, encodeHeader, receiveFiles, sendFiles } from '../public/js/direct.js';
+import { checkLimits, isRetryable, planChunks, uploadTransfer, xhrPutChunk } from '../public/js/upload.js';
+import { decodeHeader, encodeHeader, joinOutcome, receiveFiles, sendFiles } from '../public/js/direct.js';
 
 const publicDir = fileURLToPath(new URL('../public', import.meta.url));
 
@@ -117,6 +117,39 @@ test('uploadTransfer gives up after 3 retries and does not retry plain 4xx', asy
 
   const limited = await run(429, 'rate_limited');
   assert.equal(limited.puts, 4);
+});
+
+test('a join answer other than joined or busy falls back to the stored lookup', () => {
+  assert.equal(joinOutcome({ type: 'joined' }), 'direct');
+  assert.equal(joinOutcome({ type: 'busy' }), 'busy');
+  // a rate-limited join must not block opening a stored transfer: HTTP decides
+  assert.equal(joinOutcome({ type: 'error', code: 'rate_limited' }), 'stored');
+  for (const type of ['not-live', 'not-found', 'closed']) assert.equal(joinOutcome({ type }), 'stored');
+});
+
+test('xhrPutChunk times out with a retryable error', async () => {
+  const sent: { timeout: number }[] = [];
+  class FakeXhr {
+    timeout = 0;
+    upload = { onprogress: null };
+    ontimeout: (() => void) | null = null;
+    open() {}
+    setRequestHeader() {}
+    send() {
+      sent.push(this);
+      queueMicrotask(() => this.ontimeout?.());
+    }
+  }
+  const g = globalThis as { XMLHttpRequest?: unknown };
+  const saved = g.XMLHttpRequest;
+  g.XMLHttpRequest = FakeXhr;
+  try {
+    const err = await xhrPutChunk('/x', new Blob(['a']), 'tok', () => {}).catch((e: unknown) => e);
+    assert.equal(sent[0]!.timeout, 120_000);
+    assert.equal(isRetryable(err), true);
+  } finally {
+    g.XMLHttpRequest = saved;
+  }
 });
 
 /** Two fake data channels wired to each other, delivering messages asynchronously in order. */

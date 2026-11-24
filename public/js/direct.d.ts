@@ -28,6 +28,7 @@ export function receiveFiles(
   onFile?: (file: ReceivedFile) => void,
   onProgress?: (received: number, total: number) => void,
 ): Promise<ReceivedFile[]>;
+export function joinOutcome(msg: { type: string; [k: string]: unknown }): 'direct' | 'busy' | 'stored';
 export function wsUrl(loc: { protocol: string; host: string }): string;
 export function openSignaling(
   url: string,
