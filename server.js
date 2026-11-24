@@ -443,9 +443,7 @@ function deleteOld(file){
 function createDir(fdata){
 	// create directory
 	var dir = './uploads/' + fdata.file_id;
-	if (!fs.existsSync(dir)){
-	    fs.mkdirSync(dir);
-	}
+	fs.mkdirSync(dir, { recursive: true });
 	return 'uploads/' + fdata.file_id.toString();
 }
 
