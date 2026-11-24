@@ -72,6 +72,17 @@ test('TURN server is appended to iceServers', () => {
   assert.equal(c.iceServers.length, 2);
 });
 
+test('STUN_URLS: unset is the default, empty means none, a list replaces it', () => {
+  const stun = (v?: string) => cfg({ STUN_URLS: v }).iceServers;
+  assert.deepEqual(stun(undefined), [{ urls: 'stun:stun.l.google.com:19302' }]);
+  assert.deepEqual(stun(''), []);
+  assert.deepEqual(stun('  '), []);
+  assert.deepEqual(stun('stun:a.example:3478'), [{ urls: 'stun:a.example:3478' }]);
+  assert.deepEqual(stun(' stun:a.example:3478 , stun:b.example ,'), [{ urls: ['stun:a.example:3478', 'stun:b.example'] }]);
+  const withTurn = cfg({ STUN_URLS: '', TURN_URL: 'turn:x:3478' }).iceServers;
+  assert.deepEqual(withTurn, [{ urls: 'turn:x:3478' }]);
+});
+
 test('APP_SECRET validation', () => {
   assert.deepEqual(cfg().appSecret, Buffer.from(SECRET, 'hex'));
   assert.throws(() => loadConfig({ APP_SECRET: 'short' }));
