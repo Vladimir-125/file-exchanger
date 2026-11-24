@@ -1,5 +1,7 @@
 node_modules
-uploads
-.env
+data
 .git
+.superpowers
+.env
 test
+docs

@@ -1,7 +1,7 @@
 {
   "name": "file-exchanger",
   "version": "1.0.0",
-  "description": "Send me file: share files by short key or QR code, optionally password-encrypted",
+  "description": "File Exchanger: share files by short key or QR code, optionally password-encrypted",
   "scripts": {
     "start": "tsx src/server.ts",
     "test": "tsc --noEmit && node --import tsx --test 'test/**/*.test.ts'",
