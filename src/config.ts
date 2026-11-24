@@ -41,7 +41,7 @@ const int = (def: number, min: number, max?: number) =>
 const str = z.string().optional();
 
 const schema = z.object({
-  PORT: int(3000, 1, 65535),
+  PORT: int(3000, 0, 65535),
   DATA_DIR: str,
   BASE_URL: str,
   APP_SECRET: z
