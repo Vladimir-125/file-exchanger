@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     environment:
       DATA_DIR: /data # beats env_file: .env.example sets a local path
+      PORT: "3000" # pinned: the port mapping below targets 3000, whatever PORT says in .env
     env_file:
       - path: .env
         required: false
