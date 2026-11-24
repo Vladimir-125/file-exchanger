@@ -1,31 +1,24 @@
 // call all the required packages
 const express = require('express');
-const bodyParser= require('body-parser');
+const bodyParser = require('body-parser');
 const multer = require('multer');
 const fs = require('fs');
-// remove file directory
-const rimraf = require('rimraf');
-// mysql connection to db
-const connectionPool = require('./connectdb');
-const transporter = require('./transporter');
-const cookieParser = require('cookie-parser'); // store cookie to clients machine
-const session = require('express-session'); // login confirmation
-// fix non-ASCII code file name problem
-var contentDisposition = require('content-disposition');
-// express app
-const app = express();
-
-// file encryption
-const crypto = require('crypto');
 const path = require('path');
-const zlib = require('zlib');
-const stream = require('stream');
-const AppendInitVect = require('./appendInitVect');
+const crypto = require('crypto');
+const rimraf = require('rimraf');
+const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
+const session = require('express-session');
+const contentDisposition = require('content-disposition'); // non-ASCII file names
 const mime = require('mime');
 
-// local variables
-//var id;
-var idDB = []; // local database
+// mysql connection to db (also loads .env)
+const connectionPool = require('./connectdb');
+const transporter = require('./transporter');
+const { hashPassword, verifyPassword, isLegacyHash, encryptToFile, decryptStream } = require('./security');
+
+const app = express();
+const db = connectionPool.promise();
 
 // config parameters ----------------------------------------------->
 
@@ -37,524 +30,311 @@ const storeTime = '24:00:00';
 // file key length
 const keyLen = 4;
 const port = process.env.PORT || 3000;
+const maxUploadBytes = (Number(process.env.MAX_UPLOAD_MB) || 100) * 1024 * 1024;
+const uploadsDir = path.join(__dirname, 'uploads');
 
-const emailSendingServer = 'wdevelopment125@gmail.com';
-
-const protocol = 'http://';
+let sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+	sessionSecret = crypto.randomBytes(32).toString('hex');
+	console.warn('SESSION_SECRET is not set; using a random one (sessions reset on restart).');
+}
 
 // config parameters <------------------------------------------------
 
+let idDB = []; // in-memory copy of the files table
 
 // init process ----------------------------------------------------->
 
-// load database on the server
-connectionPool.query('select * from files', function (err, result){
-	if (err) throw err;
-		idDB = result;
+db.query('select * from files')
+	.then(([rows]) => {
+		idDB = rows;
+		console.log('Database has been loaded on the server!');
+	})
+	.catch((err) => {
+		console.error('Failed to load files table:', err.message);
+		process.exit(1);
+	});
 
-	console.log('Database has beed loaded on the server!');
-});
+if (process.env.TRUST_PROXY) app.set('trust proxy', 1);
 
-app.use(bodyParser.urlencoded({extended: true}));
-
-// initialize cookie-parser to allow us access the cookies stored in the browser. 
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
-
-// initialize express-session to allow us track the logged-in user across sessions.
-app.use(session({secret: "Secret key protecter string",
-   				key: 'user_sid',
-				resave: false,
-			    saveUninitialized: true,
-			    cookie: {
-			    	// expires in an hour
-			        expires: 600000
-			    }
+app.use(session({
+	secret: sessionSecret,
+	name: 'user_sid',
+	resave: false,
+	saveUninitialized: false,
+	cookie: {
+		maxAge: 60 * 60 * 1000, // one hour
+		httpOnly: true,
+		sameSite: 'lax',
+		secure: process.env.COOKIE_SECURE === 'true'
+	}
 }));
 
-var loginChecker = (req, res, next) => {
-	console.log(req.session.logged);
-    if (!req.session.logged) {
-        res.redirect('/');
-    } else {
-        next();
-    }    
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+const keyLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+
+const loginChecker = (req, res, next) => {
+	if (!req.session.logged) return res.redirect('/');
+	next();
 };
 
-// set interval how often to delete
-setInterval(function(){
-	 for(let i = 0; i < idDB.length; i++){
-	 	deleteOld(idDB[i]);
-	 }
-}, secInterval*1000);
+// wraps async handlers so rejections reach the error handler
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// periodically delete expired files
+setInterval(() => {
+	for (const file of [...idDB]) deleteOld(file);
+}, secInterval * 1000);
 
 // init process <------------------------------------------------------
 
+app.get('/', (req, res) => res.sendFile(__dirname + '/index.html'));
+app.get('/secure', loginChecker, (req, res) => res.sendFile(__dirname + '/secure.html'));
+app.get('/signup', (req, res) => res.sendFile(__dirname + '/statics/signup.html'));
 
-// root directory
-app.get('/', function(req, res) {
-    res.sendFile(__dirname + '/index.html');  
-});
+app.post('/signup', authLimiter, wrap(async (req, res) => {
+	const uname = String(req.body.uname || '').trim();
+	const uemail = String(req.body.uemail || '').trim().toLowerCase();
+	const upassword = String(req.body.upassword || '');
 
-app.get('/secure', loginChecker, function(req, res) {
-    res.sendFile(__dirname + '/secure.html');  
-});
+	if (!uname || uname.length > 100 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(uemail) || upassword.length < 8) {
+		return res.status(400).end('Please provide a name, a valid email and a password of at least 8 characters.');
+	}
 
-app.get('/signup', function(req, res) {
-    res.sendFile(__dirname + '/statics/signup.html');  
-});
+	const [existing] = await db.query('select id from users where email = ?', [uemail]);
+	if (existing.length > 0) return res.end('You have been already signed up before!');
 
+	const passwordHash = await hashPassword(upassword);
+	const confirmToken = crypto.randomBytes(32).toString('hex');
+	await db.query(
+		'insert into not_confirmed (name, email, salt, password_hash, confirm_url) values (?, ?, ?, ?, ?)',
+		[uname, uemail, '', passwordHash, confirmToken]
+	);
 
-app.post('/signup', function(req, res) {
-	const uname = req.body.uname;
-	const uemail = req.body.uemail.toLowerCase();
-	const upassword = req.body.upassword;
-	const salt = randHex(16);
-	const upasswordhash = crypto.createHash('sha256').update(salt+upassword).digest('hex');
-	const confirm_url = crypto.createHash('sha256').update(salt+uemail).digest('hex');
-	// check if email is already exist
-
-	checkEmail(uemail).then(function(result){
-		if(result.length>0){
-			// this user is already in db
-			res.end('You have been already signed up before!');
-
-		}else{
-			// new user
-			let sql = `insert into \`not_confirmed\` (\`name\`, \`email\`,\`salt\`, \`password_hash\`, \`confirm_url\`) values('${uname}','${uemail}','${salt}','${upasswordhash}', '${confirm_url}')`;
-			connectionPool.query(sql, function (err, result){
-				if (err) throw err;
-			});
-
-			let emailText = `Thank you for subscribing on Send me file.
+	const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+	transporter.sendMail({
+		from: process.env.EMAIL,
+		to: uemail,
+		subject: 'Welcome to Send me File',
+		text: `Thank you for subscribing on Send me file.
 From now on you can use your email to login to our system.
-Just folow the link to confirm signup: ${protocol+req.headers.host+'/confirm/'+confirm_url}`;
-			var mailOptions = {
-			  from: emailSendingServer,
-			  to: uemail,
-			  subject: 'Welcome to Send me File',
-			  text: emailText 
-			};
-
-			transporter.sendMail(mailOptions, function(error, info){
-			  if (error) {
-			    console.log(error);
-			  } else {
-			    console.log('Email sent: ' + info.response);
-			  }
-			});
-
-			res.sendFile(__dirname + '/statics/signup-welcome.html');;
-		}	
-		
-	}).catch((err)=>setImmediate(()=>{throw err;}));
-});
-
-function checkEmail(email){
-	return new Promise(function(resolve, reject){
-		const sql = `select * from users where email='${email}'`;	
-		connectionPool.query(sql, function (err, result){
-		if (err){
-			return reject(err);
-		};
-		resolve(result);
-		});
+Just follow the link to confirm signup: ${baseUrl}/confirm/${confirmToken}`
+	}, (error, info) => {
+		if (error) console.error('Email error:', error.message);
+		else console.log('Email sent: ' + info.response);
 	});
-}
 
+	res.sendFile(__dirname + '/statics/signup-welcome.html');
+}));
 
-app.get('/confirm/:token', (req, res)=>{
-	const token = req.params.token;
-	getUnconfirmedUser(token).then(function(result){
-		if(result.length>0){
-			// right token
-
-			// insert into users table
-			const insertSql = `insert into users(\`name\`, \`email\`,\`salt\`, \`password_hash\`) values('${result[0].name}','${result[0].email}','${result[0].salt}','${result[0].password_hash}')`;
-
-			connectionPool.query(insertSql, function (err, result){
-				if (err) throw err;
-			});
-
-			// delete from not confirmed table
-			const deleteSql = `delete from not_confirmed where confirm_url=\'${token}\'`;
-			
-			connectionPool.query(deleteSql, function (err, result){
-				if (err) throw err;
-			});
-			res.end('You have successfully confirmed your email address!');
-		}else{
-			// wrong toket
-			res.status(404);        // HTTP status 404: NotFound
-			res.sendFile(__dirname + '/statics/pagenotfound.html'); 
-		}
-	}).catch((err)=>setImmediate(()=>{throw err;}));
-});
-
-function getUnconfirmedUser(token){
-	return new Promise(function(resolve, reject){
-		const sql = `select * from not_confirmed where confirm_url=\'${token}\'`;	
-		connectionPool.query(sql, function (err, result){
-		if (err){
-			return reject(err);
-		};
-		resolve(result);
-		});
-	});
-}
-
+app.get('/confirm/:token', authLimiter, wrap(async (req, res) => {
+	const [rows] = await db.query('select * from not_confirmed where confirm_url = ?', [req.params.token]);
+	if (rows.length === 0) {
+		return res.status(404).sendFile(__dirname + '/statics/pagenotfound.html');
+	}
+	const u = rows[0];
+	try {
+		await db.query(
+			'insert into users (name, email, salt, password_hash) values (?, ?, ?, ?)',
+			[u.name, u.email, u.salt, u.password_hash]
+		);
+	} catch (err) {
+		if (err.code !== 'ER_DUP_ENTRY') throw err; // already confirmed via another link
+	}
+	await db.query('delete from not_confirmed where email = ?', [u.email]);
+	res.end('You have successfully confirmed your email address!');
+}));
 
 // send static files for user
-app.use(express.static( __dirname + "/public"));
+app.use(express.static(__dirname + '/public'));
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: maxUploadBytes, files: 1 } });
 
+app.post('/login', authLimiter, wrap(async (req, res) => {
+	const email = String(req.body.email || '').toLowerCase();
+	const password = String(req.body.password || '');
+	const [rows] = await db.query('select * from users where email = ?', [email]);
+	const user = rows[0];
 
-// storage defines where the file shoul be stored
-// destination is used to determine within which folder the uploaded files should be stored.
-// cb 
-// filename is used to determine what the file should be named inside the folder.
-var storage = multer.memoryStorage()
- 
-var upload = multer({ storage: storage });
+	if (!user || !(await verifyPassword(password, user.password_hash, user.salt))) {
+		return res.end('Wrong email or password!');
+	}
 
-app.post('/login', (req, res)=>{
-	const email = req.body.email.toLowerCase();
-	const sql = `select * from users where email='${email}'`;
-	connectionPool.query(sql, function (err, result){
-		if (err) throw err;
-			if(result.length>0){
-				const passwordHash = crypto.createHash('sha256').update(result[0].salt+req.body.password).digest('hex'); // temp value
-				if(passwordHash===result[0].password_hash){
-					req.session.logged = true;
-					req.session.userName = result[0].name;
-					req.session.userId = result[0].id;
-					req.session.userEmail = result[0].email;
-					res.redirect('/secure');
-				}else{
-					// wrong password
-					res.end('Wrong email or password!');
-				}
-							
-			}else{
-				// wrong email
-				res.end('Wrong email or password!');				
-			}
+	if (isLegacyHash(user.password_hash)) {
+		// upgrade old sha256 hash
+		await db.query('update users set password_hash = ?, salt = ? where id = ?', [await hashPassword(password), '', user.id]);
+	}
+
+	req.session.regenerate((err) => {
+		if (err) return res.status(500).end('Session error');
+		req.session.logged = true;
+		req.session.userName = user.name;
+		req.session.userId = user.id;
+		req.session.userEmail = user.email;
+		res.redirect('/secure');
 	});
+}));
+
+app.post('/name', loginChecker, (req, res) => {
+	res.type('text/plain').end(req.session.userName);
 });
 
-app.post('/name', loginChecker, (req, res)=>{
-	res.end(req.session.userName);
-});
+app.post('/uploadfile', upload.single('file'), wrap(async (req, res) => {
+	const file = req.file;
+	if (!file) return res.status(400).end('Please upload a file');
 
-app.post('/uploadfile', upload.single('file'), (req, res, next) => {
-  const file = req.file;
-  if (!file) {
-  	// file has not been sent
-    const error = new Error('Please upload a file');
-    error.httpStatusCode = 400;
-    return next(error);
-  }
-  else{
-  	// create file id and creation date
 	const fdata = createMetadata();
+	const dir = createDir(fdata);
+	const name = safeFileName(file.originalname);
 
-  	// choose storage method
-  	if(req.body.password){
-  		encrypt(file.buffer, file.originalname, req.body.password, fdata);
-  		// get password hash
-		const hash = crypto.createHash('sha256').update(req.body.password).digest('hex'); // temp value
-		fdata.password_hash = hash;
-  	}else{
-  		//encrypt and stores file
-  		storeBuffer(file.buffer, file.originalname, fdata);
-  	}
-
-  	// insert in db
-  	idDB.push(fdata);
-	let sql = 'insert into files values(' + fdata.file_id + ',\'' + fdata.creation_date + '\',\'' + fdata.password_hash + '\');';
-	connectionPool.query(sql, function (err, result) {
-		if (err) throw err;
-	});
-
-    // return download key and server store time
-	res.json({'key':fdata.file_id,'time':storeTime});
-  }
-});
-
-app.post('/validate', function(req, res) {
-	const req_key = req.body.key;
-    const passwd =  req.body.password;
-    const index = idDB.findIndex(obj => obj.file_id == req_key);
-
-    // if file exist, get index of the file
-    if(index >= 0){
-    	// if file id in db
-    	if(idDB[index].password_hash != ''){
-    		// if file has a password
-    		if(passwd==undefined){
-    			res.end('enc');
-    		}else{
-    			const passhash = crypto.createHash('sha256').update(passwd).digest('hex');
-    			if(idDB[index].password_hash == passhash){
-    				res.end('ok');
-    			}else{
-    				// wrong password
-    				res.end('wrongpass');
-    			}
-    		}
-    	}else{
-    		// file does not has a password
-    		res.end('ok');
-    	}
-    }else{
-    	// if file id is not in db
-    	res.end('isnx');
-
-    }
-});
-
-app.post('/download', function(req, res) {
-    
-    const req_key = req.body.key;
-    const passwd =  req.body.password;
-    const index = idDB.findIndex(obj => obj.file_id == req_key);
-    // if file exist, get index of the file
-    if(index >= 0){
-    	// if file id in db
-    	if(idDB[index].password_hash != ''){
-    		// if file has a password
-    		if(passwd==undefined){
-    			res.end('Enter password');
-    		}else{
-    			const passhash = crypto.createHash('sha256').update(passwd).digest('hex');
-    			if(idDB[index].password_hash == passhash){
-    				var folder = './uploads/' + req_key;
-					fs.readdir(folder, (err, files) => {
-						// files has names of all the files.
-						// download first file from the folder
-						const file = folder + '/' + files[0];
-						decrypt(file, passwd, res);
-						// TODO: add download all the content in the folder in one link  
-					}); 
-    			}else{
-    				// wrong password
-    				res.end('<script>alert(\'Wrong password!\')</script>');
-    			}
-    		}
-    	}else{
-    		// file does not has a password
-    		var folder = './uploads/' + req_key;
-				fs.readdir(folder, (err, files) => {
-					// files has names of all the files.
-					// download first file from the folder
-					res.download(folder + '/' + files[0]);
-					// TODO: add download all the content in the folder in one link  
-				}); 
-    	}
-    }else{
-    	// if file id is not in db
-    	res.end('<script>alert(\'File does not exist!\');document.location.href="/";</script>');
-    }
-
-});
-
-app.get('/download', (req, res)=>{
-	const req_key = req.query.key;
-	const index = idDB.findIndex(obj => obj.file_id == req_key);
-    // if file exist, get index of the file
-    if(index >= 0){
-    	// if file id in db
-    	if(idDB[index].password_hash != ''){
-    		//if file has a password
-    		//get password...
-    		let script = `
-						<!DOCTYPE html>
-						<html>
-						<head>
-						</head>
-						<body>
-							<script>
-								var form = document.createElement("form");                 
-								var key = document.createElement("input");                 
-								var pass = document.createElement("input");
-								key.value = ${req_key};
-								pass.value = prompt('Enter password:');
-								key.setAttribute('name', 'key');
-								key.style.visibility = "hidden";
-								pass.style.visibility = "hidden";
-								pass.setAttribute('name', 'password');                
-								form.setAttribute('method', 'post');
-								form.setAttribute('action', '/download');
-								form.appendChild(key);                              
-								form.appendChild(pass);                              
-								document.body.appendChild(form).submit();
-								setTimeout(()=>{document.location.href="/";}, 1000);
-							</script>
-						</body>
-						</html>
-    					`;
-    		res.end(script);
-    	}else{
-    		// file does not has a password
-    		var folder = './uploads/' + req_key;
-				fs.readdir(folder, (err, files) => {
-					// files has names of all the files.
-					// download first file from the folder
-					res.download(folder + '/' + files[0]);
-					// TODO: add download all the content in the folder in one link  
-				}); 
-    	}
-    }else{
-    	// if file id is not in db
-    	res.end('<script>alert(\'File does not exist!\');document.location.href="/";</script>');
-    }
-});
-
-function deleteOld(file){
-	const min = storeMinutes;
-	const hours = storeHours;
-	// waiting time in seconds
-	let waitTime = 0; 
-	
-	if(min>0)
-		waitTime += min*60;
-	if(hours>0)
-		waitTime += hours*60*60;
-	
-	const creationTime = new Date(file.creation_date);
-	const currenTime = new Date();
-	let dif = currenTime.getTime() - creationTime.getTime();
-	let totalSeconds = Math.floor(dif/1000);
-
-	if(totalSeconds > waitTime){
-		//console.log('File has been on the server ' + totalSeconds + ' seconds.');
-		rimraf("./uploads/" + file.file_id, function () { 
-			console.log('File has beed deleted!'); 
-		});
-		connectionPool.query('DELETE FROM files WHERE file_id =' + file.file_id, function (err, result){
-			if (err) throw err;
-		});
-		let index = idDB.indexOf(file);
-		if (index > -1) {
- 			idDB.splice(index, 1);
-		}
+	if (req.body.password) {
+		await encryptToFile(file.buffer, String(req.body.password), path.join(dir, name + '.enc'));
+		fdata.password_hash = await hashPassword(String(req.body.password));
+	} else {
+		await fs.promises.writeFile(path.join(dir, name), file.buffer);
 	}
+
+	idDB.push(fdata);
+	await db.query('insert into files (file_id, creation_date, password_hash) values (?, ?, ?)',
+		[fdata.file_id, fdata.creation_date, fdata.password_hash]);
+
+	// return download key and server store time
+	res.json({ key: fdata.file_id, time: storeTime });
+}));
+
+// returns the in-memory record for a key, or undefined
+function findFile(rawKey) {
+	if (!/^\d{1,10}$/.test(String(rawKey || ''))) return undefined;
+	const key = Number(rawKey);
+	return idDB.find((obj) => obj.file_id === key);
 }
 
-function createDir(fdata){
-	// create directory
-	var dir = './uploads/' + fdata.file_id;
+async function firstFileIn(fileId) {
+	const folder = path.join(uploadsDir, String(fileId));
+	const files = await fs.promises.readdir(folder);
+	if (files.length === 0) throw new Error('Upload folder is empty');
+	return path.join(folder, files[0]);
+}
+
+app.post('/validate', keyLimiter, wrap(async (req, res) => {
+	const record = findFile(req.body.key);
+	const passwd = req.body.password;
+
+	if (!record) return res.end('isnx');
+	if (!record.password_hash) return res.end('ok');
+	if (passwd === undefined) return res.end('enc');
+	res.end((await verifyPassword(String(passwd), record.password_hash)) ? 'ok' : 'wrongpass');
+}));
+
+app.post('/download', keyLimiter, wrap(async (req, res) => {
+	const record = findFile(req.body.key);
+	const passwd = req.body.password;
+
+	if (!record) {
+		return res.end('<script>alert(\'File does not exist!\');document.location.href="/";</script>');
+	}
+
+	const filePath = await firstFileIn(record.file_id);
+
+	if (!record.password_hash) return res.download(filePath);
+	if (passwd === undefined) return res.end('Enter password');
+	if (!(await verifyPassword(String(passwd), record.password_hash))) {
+		return res.end('<script>alert(\'Wrong password!\')</script>');
+	}
+
+	const plain = await decryptStream(filePath, String(passwd));
+	const filename = path.basename(filePath).replace(/\.enc$/, '');
+	res.setHeader('Content-Disposition', contentDisposition(filename));
+	res.setHeader('Content-Type', mime.getType(filename) || 'application/octet-stream');
+	plain.on('error', (err) => {
+		console.error('Decrypt error:', err.message);
+		res.destroy(err);
+	});
+	plain.pipe(res);
+}));
+
+app.get('/download', keyLimiter, wrap(async (req, res) => {
+	const record = findFile(req.query.key);
+	if (!record) {
+		return res.end('<script>alert(\'File does not exist!\');document.location.href="/";</script>');
+	}
+
+	if (!record.password_hash) return res.download(await firstFileIn(record.file_id));
+
+	// file has a password: prompt for it and re-submit as POST
+	res.end(`<!DOCTYPE html>
+<html>
+<head></head>
+<body>
+	<script>
+		var form = document.createElement("form");
+		var key = document.createElement("input");
+		var pass = document.createElement("input");
+		key.value = ${JSON.stringify(String(record.file_id))};
+		pass.value = prompt('Enter password:');
+		key.setAttribute('name', 'key');
+		key.style.visibility = "hidden";
+		pass.style.visibility = "hidden";
+		pass.setAttribute('name', 'password');
+		form.setAttribute('method', 'post');
+		form.setAttribute('action', '/download');
+		form.appendChild(key);
+		form.appendChild(pass);
+		document.body.appendChild(form).submit();
+		setTimeout(()=>{document.location.href="/";}, 1000);
+	</script>
+</body>
+</html>`);
+}));
+
+// error handler
+app.use((err, req, res, next) => {
+	if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+		return res.status(413).end('File is too large');
+	}
+	console.error(err);
+	if (res.headersSent) return res.destroy();
+	res.status(500).end('Internal server error');
+});
+
+function deleteOld(file) {
+	const waitTime = storeMinutes * 60 + storeHours * 60 * 60; // seconds
+	const age = (Date.now() - new Date(file.creation_date).getTime()) / 1000;
+	if (age <= waitTime) return;
+
+	const index = idDB.indexOf(file);
+	if (index > -1) idDB.splice(index, 1);
+
+	rimraf(path.join(uploadsDir, String(file.file_id)), () => console.log('File has been deleted!'));
+	db.query('DELETE FROM files WHERE file_id = ?', [file.file_id])
+		.catch((err) => console.error('Failed to delete file record:', err.message));
+}
+
+function createDir(fdata) {
+	const dir = path.join(uploadsDir, String(fdata.file_id));
 	fs.mkdirSync(dir, { recursive: true });
-	return 'uploads/' + fdata.file_id.toString();
+	return dir;
 }
 
-function createMetadata(){
-	while(true){
-		// create id
-		let id = Math.floor(Math.random() * 9 * Math.pow(10, keyLen-1) + 1 * Math.pow(10, keyLen-1));    
-		// if created an id that doesn't exist in the db
-		if(!idDB.filter(obj => obj.file_id==id).length > 0){
-			let fileInfo = {};
-			fileInfo.file_id = id;
-			fileInfo.creation_date = currentDateTime();
-			fileInfo.password_hash = '';
+// keep only the base name and drop characters that are unsafe in file names
+function safeFileName(name) {
+	let base = path.basename(String(name || '').replace(/\\/g, '/'));
+	base = base.replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, '_').replace(/^\.+/, '').slice(0, 200);
+	return base || 'file';
+}
 
-			return fileInfo;
+function createMetadata() {
+	const min = 10 ** (keyLen - 1);
+	while (true) {
+		const id = crypto.randomInt(min, min * 10);
+		if (!idDB.some((obj) => obj.file_id === id)) {
+			return { file_id: id, creation_date: new Date(), password_hash: '' };
 		}
 	}
 }
 
-function currentDateTime(){
-	// prepare date string 'YYYY-MM-DD HH-MM-SS'
-	var d = new Date();
-	return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + d.getHours() + ':' + d.getMinutes() + ':' + d.getSeconds();
-}
-
-
-function encrypt(file, name, password, fdata) {
-	// Generate a secure, pseudo random initialization vector.
-	const initVect = crypto.randomBytes(16);
-	var readStream = new stream.PassThrough();
-
-	// Write your buffer
-	readStream.end(file);
-
-	// Pipe it to something else  (i.e. stdout)
-	// Generate a cipher key from the password.
-	const CIPHER_KEY = getCipherKey(password);
-	//const readStream = file;
-	const gzip = zlib.createGzip();
-	const cipher = crypto.createCipheriv('aes256', CIPHER_KEY, initVect);
-	const appendInitVect = new AppendInitVect(initVect);
-	// Create a write stream with a different file extension.
-	const writeStream = fs.createWriteStream(path.join( createDir(fdata) + '/' + name + ".enc"));
-
-	readStream
-		.pipe(gzip)
-		.pipe(cipher)
-		.pipe(appendInitVect)
-		.pipe(writeStream);
-}
-
-function decrypt(file, password, res) {
-	// First, get the initialization vector from the file.
-	const readInitVect = fs.createReadStream(file, { end: 15 });
-
-	let initVect;
-	readInitVect.on('data', (chunk) => {
-	initVect = chunk;
-	});
-
-	// Once we’ve got the initialization vector, we can decrypt the file.
-	readInitVect.on('close', () => {
-		const cipherKey = getCipherKey(password);
-		const readStream = fs.createReadStream(file, { start: 16 });
-		const decipher = crypto.createDecipheriv('aes256', cipherKey, initVect);
-		const unzip = zlib.createUnzip();
-
-		// remove .enc part
-		file = file.substr(0, file.length-4);
-
-		var filename = path.basename(file);
-		var mimetype = mime.getType(file);
-		// content disposition now will accept non-ascii file names as well
-		res.setHeader('Content-disposition', contentDisposition(filename));
-		res.setHeader('Content-type', mimetype);
-		
-
-		readStream
-		  	.pipe(decipher)
-		  	.pipe(unzip)
-		  	.pipe(res);
-	});
-}
-
-function storeBuffer(buffer, fname, fdata){
-	var readStream = new stream.PassThrough();
-
-	// Write your buffer
-	readStream.end(buffer);
-
-	const writeStream = fs.createWriteStream(path.join( createDir(fdata) + '/' + fname));
-
-	readStream.pipe(writeStream);
-}
-
-function getCipherKey(password) {
-  return crypto.createHash('sha256').update(password).digest();
-}
-
-function randHex(len) {
-var maxlen = 8,
-      min = Math.pow(16,Math.min(len,maxlen)-1) 
-      max = Math.pow(16,Math.min(len,maxlen)) - 1,
-      n   = Math.floor( Math.random() * (max-min+1) ) + min,
-      r   = n.toString(16);
-  while ( r.length < len ) {
-     r = r + randHex( len - maxlen );
-  }
-  return r;
-};
-
-app.listen(port, ()=>{
+app.listen(port, () => {
 	console.log('Running at Port: ' + port);
 });
