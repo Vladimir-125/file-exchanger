@@ -18,9 +18,9 @@ function authRoutes({ db, mailer, config, limiter }) {
 	router.get('/signup', (req, res) => res.sendFile(view('signup.html')));
 
 	router.post('/signup', limiter, async (req, res) => {
-		const uname = String(req.body.uname || '').trim();
-		const uemail = String(req.body.uemail || '').trim().toLowerCase();
-		const upassword = String(req.body.upassword || '');
+		const uname = String(req.body?.uname || '').trim();
+		const uemail = String(req.body?.uemail || '').trim().toLowerCase();
+		const upassword = String(req.body?.upassword || '');
 
 		if (!uname || uname.length > 100 || !EMAIL_RE.test(uemail) || upassword.length < 8) {
 			return res.status(400).end('Please provide a name, a valid email and a password of at least 8 characters.');
@@ -63,8 +63,8 @@ Just follow the link to confirm signup: ${baseUrl}/confirm/${confirmToken}`
 	});
 
 	router.post('/login', limiter, async (req, res) => {
-		const email = String(req.body.email || '').toLowerCase();
-		const password = String(req.body.password || '');
+		const email = String(req.body?.email || '').toLowerCase();
+		const password = String(req.body?.password || '');
 		const [rows] = await db.query('select * from users where email = ?', [email]);
 		const user = rows[0];
 

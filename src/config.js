@@ -10,10 +10,19 @@ if (!sessionSecret) {
 	console.warn('SESSION_SECRET is not set; using a random one (sessions reset on restart).');
 }
 
+// '' / 'false' / '0' -> off, a number -> that many proxy hops, 'true' -> 1 hop
+function parseTrustProxy(value) {
+	const v = String(value || '').trim().toLowerCase();
+	if (!v || v === 'false' || v === '0') return false;
+	if (/^\d+$/.test(v)) return Number(v);
+	if (v === 'true') return 1;
+	return v; // e.g. 'loopback' or an IP/subnet list
+}
+
 module.exports = {
 	port: Number(env.PORT) || 3000,
 	baseUrl: env.BASE_URL || '',
-	trustProxy: Boolean(env.TRUST_PROXY),
+	trustProxy: parseTrustProxy(env.TRUST_PROXY),
 	cookieSecure: env.COOKIE_SECURE === 'true',
 	sessionSecret,
 
