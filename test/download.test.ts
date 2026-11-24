@@ -427,3 +427,32 @@ describe('key guessing', () => {
     }
   });
 });
+
+describe('aborted downloads and the miss budget', () => {
+  let t: TestApp;
+  before(async () => {
+    t = await makeTestApp({ rateLimits: { miss: 2 } });
+  });
+  after(() => t.close());
+
+  it('a download the client aborts mid-stream does not use up the miss budget', async () => {
+    const { ready } = await share(t, [{ name: 'big', data: randomBytes(24 * MB) }]);
+    const url = `${t.base}/api/transfers/${ready.key}/files/${ready.files[0]!.fileId}`;
+    for (let i = 0; i < 4; i++) {
+      const ctl = new AbortController();
+      const res = await fetch(url, { signal: ctl.signal });
+      assert.equal(res.status, 200);
+      const reader = res.body!.getReader();
+      await reader.read();
+      ctl.abort();
+      await reader.read().catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 200)); // the server notices the closed sockets
+    const miss = await fetch(`${t.base}/api/transfers/ZZZZZZ`);
+    assert.equal(miss.status, 404);
+    await miss.arrayBuffer();
+    const ok = await fetch(url);
+    assert.equal(ok.status, 200);
+    await ok.arrayBuffer();
+  });
+});
