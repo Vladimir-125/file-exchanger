@@ -17,7 +17,7 @@ cp .env.example .env     # optional, see Configuration
 docker compose up -d --build
 ```
 
-The app listens on http://localhost:3000 (change the host port with `APP_PORT`). The database and uploaded files live in the `data` volume, mounted at `/data` in the container. There is no separate database service.
+The app listens on http://localhost:3000 (change the host port with `APP_PORT`). The port is published on `127.0.0.1` only, so it is not reachable from other machines; see [Running behind a reverse proxy or tunnel](#running-behind-a-reverse-proxy-or-tunnel). The database and uploaded files live in the `data` volume, mounted at `/data` in the container. There is no separate database service.
 
 For anything public, set `APP_SECRET` (`openssl rand -hex 32`) and `BASE_URL` in `.env`, see the next sections.
 
@@ -79,6 +79,7 @@ Behind nginx, Caddy, cloudflared or similar:
 - `COOKIE_SECURE=true` once the site is served over HTTPS.
 - `APP_SECRET` set, so sessions survive restarts.
 - The proxy must pass WebSocket upgrades on `/ws` and allow request bodies of at least `CHUNK_MB`.
+- The proxy must be the only way to reach the app. Point cloudflared (or nginx) at `http://127.0.0.1:3000`, as published by `docker-compose.yml`, or run it in the same Docker network and use `http://app:3000`. Do not publish the port on all interfaces (`"3000:3000"`): Docker's published ports bypass firewalls such as ufw, and with `TRUST_PROXY` set anyone reaching the port directly can send their own `X-Forwarded-For` and get a fresh rate-limit budget on every request.
 
 ### Rate limits
 
