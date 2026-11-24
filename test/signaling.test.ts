@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { test, type TestContext } from 'node:test';
 import WebSocket from 'ws';
+import { transfers } from '../src/db/schema.ts';
+import { createSignaling } from '../src/realtime/signaling.ts';
 import { makeTestApp, postJson, type TestApp } from './helpers.ts';
 
 const KEY_RE = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6}$/;
@@ -469,4 +473,66 @@ test('a failed fallback complete releases its claim on the live key', async (t) 
   a.signaling.sweep();
   await sender.next('expired');
   assert.equal(a.signaling.isLive(key), false);
+});
+
+test('an expired but uncleaned stored key is still in use, and a join on it is not-found', async (t) => {
+  let clock = Date.now();
+  const a = await app(t, { now: () => clock });
+  const res = await upload(a);
+  const { key } = (await res.json()) as { key: string };
+  assert.equal(a.deps.transfers.hasReadyKey(key), true);
+  clock += 25 * 3600_000; // past the TTL; cleanup has not run, so the row (and its unique key) remain
+  assert.equal(a.deps.transfers.hasReadyKey(key), false);
+  assert.equal(a.deps.transfers.keyInUse(key), true);
+  assert.equal(a.deps.transfers.keyInUse('ZZZZZZ'), false);
+
+  const late = await connect(t, a);
+  late.send({ type: 'join', key });
+  await late.next('not-found');
+});
+
+test('live key generation avoids every key the database holds, expired rows included', async (t) => {
+  const a = await app(t);
+  const asked: string[] = [];
+  const hub = createSignaling({
+    config: a.deps.config,
+    now: Date.now,
+    isStoredKey: () => false,
+    keyInUse: (k) => (asked.push(k), false),
+    rateLimitPerHour: 100,
+    joinMissPerWindow: 100,
+  });
+  t.after(() => hub.close());
+  const server = http.createServer();
+  hub.attach(server);
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`);
+  t.after(() => ws.terminate());
+  const hosted = new Promise<Msg>((resolve) => ws.on('message', (d) => resolve(JSON.parse(String(d)))));
+  await new Promise((r) => ws.once('open', r));
+  ws.send(JSON.stringify({ type: 'host' }));
+  assert.equal(((await hosted) as Msg).type, 'hosted');
+  assert.ok(asked.length >= 1);
+});
+
+test('a live key that cannot be kept at complete ends the room and tells the receiver', async (t) => {
+  const a = await app(t);
+  const { sender, key, liveToken } = await host(t, a);
+  const receiver = await connect(t, a);
+  receiver.send({ type: 'join', key });
+  await receiver.next('joined');
+  // a row with the live key appears after hosting (it could not be avoided at host time)
+  a.deps.db
+    .insert(transfers)
+    .values({ id: 'x'.repeat(8), key, uploadTokenHash: 'h', status: 'ready', totalSize: 0, createdAt: new Date(), expiresAt: new Date(Date.now() - 1000) })
+    .run();
+
+  const res = await upload(a, { liveKey: key, liveToken });
+  assert.equal(res.status, 200);
+  assert.notEqual(((await res.json()) as { key: string }).key, key);
+  assert.equal((await receiver.next('expired')).type, 'expired');
+  await receiver.closed;
+  assert.equal(a.signaling.isLive(key), false);
+  assert.equal(sender.ws.readyState, sender.ws.OPEN, 'the sender is not cut off mid-upload');
 });

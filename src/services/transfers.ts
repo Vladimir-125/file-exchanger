@@ -22,6 +22,7 @@ export type Signaling = {
   isLive(key: string): boolean;
   claimLiveKey(key: string, liveToken: string): boolean;
   releaseClaim(key: string, liveToken: string): void;
+  dropClaimed(key: string, liveToken: string): void;
   notifyStored(key: string): void;
 };
 
@@ -395,7 +396,7 @@ export function createTransferService({
       }
       uploads.delete(transferId);
       if (keptLive) signaling?.notifyStored(key);
-      else release(); // the receiver switches to a normal download
+      else if (claimed) signaling!.dropClaimed(liveKey!, opts.liveToken!); // the key went to another row: end the receiver's wait
 
       return {
         key,
@@ -407,6 +408,11 @@ export function createTransferService({
     },
 
     findReady,
+
+    /** Whether any transfer row has this key, expired-but-uncleaned ones included. */
+    keyInUse(key: string): boolean {
+      return db.select({ id: transfers.id }).from(transfers).where(eq(transfers.key, key)).get() !== undefined;
+    },
 
     /** Whether a ready, unexpired transfer has this (normalized) key. */
     hasReadyKey(key: string): boolean {
