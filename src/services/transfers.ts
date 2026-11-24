@@ -97,13 +97,10 @@ export function createTransferService({
     return row;
   }
 
-  function stateOf(row: Transfer): UploadState | undefined {
-    let state = uploads.get(row.id);
-    // after a restart an unprotected upload can be resumed by re-sending every chunk
-    if (!state && !row.passwordHash) {
-      state = { received: new Map(), inflight: 0, completing: false, lastActivity: now(), client: '', size: row.totalSize };
-      uploads.set(row.id, state);
-    }
+  /** The upload's in-memory state; after a restart there is none and the upload is lost. */
+  function stateOf(row: Transfer): UploadState {
+    const state = uploads.get(row.id);
+    if (!state) throw uploadLost();
     return state;
   }
 
@@ -275,7 +272,6 @@ export function createTransferService({
         throw new HttpError(400, 'bad_chunk', 'Chunk index out of range');
       }
       const state = stateOf(row);
-      if (!state) throw uploadLost();
       if (state.completing) throw notUploading();
 
       const start = index * config.chunkBytes;
@@ -320,7 +316,6 @@ export function createTransferService({
     async complete(transferId: string, uploadToken: string, opts: CompleteOpts = {}): Promise<ReadyTransfer> {
       const row = uploadingTransfer(transferId, uploadToken);
       const state = stateOf(row);
-      if (!state || (row.passwordHash && state.password === undefined)) throw uploadLost();
       if (state.completing) throw notUploading();
       if (state.inflight > 0) throw incomplete();
       const files = filesOf(transferId);
