@@ -21,5 +21,5 @@ export function planChunks(size: number, chunkBytes: number): Chunk[];
 export function formatBytes(n: number): string;
 export function checkLimits(files: ArrayLike<{ name: string; size: number }>, limits: Limits): string | null;
 export function isRetryable(err: unknown): boolean;
-export const xhrPutChunk: PutChunk;
+export function xhrPutChunk(url: string, blob: Blob, token: string, onBytes: (n: number) => void, stallMs?: number): Promise<unknown>;
 export function uploadTransfer(files: ArrayLike<File> | Iterable<File>, opts?: UploadOptions): Promise<ReadyTransfer>;

@@ -37,6 +37,10 @@ export async function startServer(
     transfers = createTransferService({ db, config, now, signaling });
     const app = createApp({ config, db, mailer: createMailer(config), now, transfers });
     server = http.createServer(app);
+    // A chunk body (up to 95 MB) on a slow uplink can take far longer than Node's default 300 s
+    // requestTimeout, which would kill it mid-upload. Stalls are caught client-side instead.
+    server.requestTimeout = 0;
+    server.headersTimeout = 60_000;
     signaling.attach(server);
 
     const runCleanup = async () => {
