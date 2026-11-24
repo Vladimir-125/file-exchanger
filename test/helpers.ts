@@ -8,6 +8,7 @@ import { loadConfig } from '../src/config.ts';
 import { openDb } from '../src/db/client.ts';
 import { createRateLimits, type LimitName } from '../src/middleware/rateLimits.ts';
 import type { Mail } from '../src/services/mailer.ts';
+import { createTransferService } from '../src/services/transfers.ts';
 
 export type TestApp = {
   base: string;
@@ -33,11 +34,13 @@ export async function makeTestApp(
   });
   const { db, close: closeDb } = openDb(config.dataDir);
   const mail: Mail[] = [];
+  const now = opts.now ?? Date.now;
   const deps: Deps = {
     config,
     db,
     mailer: { send: async (msg) => void mail.push(msg) },
-    now: opts.now ?? Date.now,
+    now,
+    transfers: createTransferService({ db, config, now }),
   };
   const big = { auth: 1e6, lookup: 1e6, upload: 1e6, ws: 1e6 };
   const app = createApp(deps, createRateLimits({ ...big, ...opts.rateLimits }));
