@@ -3,7 +3,7 @@
 A small self-hosted, ad-free service for sending files. No trackers, no analytics, no third-party scripts: everything the page needs is served from this app.
 
 - **Send with a key, link or QR code.** Pick files, get a short key (6 characters by default), a link and a QR code. The receiver types the key or opens the link.
-- **Direct transfer.** The sender can keep the page open and the file goes straight to the receiver over WebRTC, without being stored on the server. If a direct connection cannot be made, the sender's browser falls back to uploading the file instead.
+- **Direct transfer.** The sender can keep the page open and the file goes straight to the receiver over WebRTC, without being stored on the server. If a direct connection fails or takes longer than 15 seconds after the receiver joins, the sender is offered an "Upload instead" button that stores the file for download.
 - **Stored transfers.** Uploaded files are kept for 24 hours by default and then removed.
 - **Protected files.** Signed-in users can add a password to a transfer. Files are then encrypted at rest (AES-256-GCM, key derived from the password with scrypt) and the password is never stored. The receiver enters the password to download.
 - **Accounts.** Sign-up with email confirmation. An account lists and deletes its own transfers and can set passwords. Sending and receiving without an account is possible.
@@ -68,7 +68,7 @@ Browsers upload each file in chunks of `CHUNK_MB` (default 50, at most 95), one 
 
 ### ICE servers (direct transfers)
 
-Direct transfers use WebRTC. By default the only ICE server is the public STUN server `stun:stun.l.google.com:19302`; there is no setting to replace or disable it. Add a TURN relay with `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL`; it is offered in addition to STUN. Without TURN, some networks (for example behind symmetric NAT) cannot connect directly, and the transfer falls back to uploading the file.
+Direct transfers use WebRTC. By default the only ICE server is the public STUN server `stun:stun.l.google.com:19302`; there is no setting to replace or disable it. Add a TURN relay with `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL`; it is offered in addition to STUN. Without TURN, some networks (for example behind symmetric NAT) cannot connect directly, and the sender has to use "Upload instead".
 
 ## Running behind a reverse proxy or tunnel
 

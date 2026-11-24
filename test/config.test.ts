@@ -69,6 +69,16 @@ test('APP_SECRET validation', () => {
   assert.throws(() => loadConfig({ APP_SECRET: 'short' }));
 });
 
+test('an empty APP_SECRET (copied .env.example) counts as unset', () => {
+  const orig = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(loadConfig({ APP_SECRET: '' }).appSecret.length, 32);
+  } finally {
+    console.warn = orig;
+  }
+});
+
 test('limits are validated', () => {
   assert.throws(() => cfg({ KEY_LENGTH: '3' }));
   assert.throws(() => cfg({ KEY_LENGTH: '13' }));
