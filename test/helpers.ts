@@ -7,13 +7,15 @@ import { createApp, type Deps } from '../src/app.ts';
 import { loadConfig } from '../src/config.ts';
 import { openDb } from '../src/db/client.ts';
 import { createRateLimits, type LimitName } from '../src/middleware/rateLimits.ts';
+import { createSignaling, type SignalingHub } from '../src/realtime/signaling.ts';
 import type { Mail } from '../src/services/mailer.ts';
-import { createTransferService } from '../src/services/transfers.ts';
+import { createTransferService, type TransferService } from '../src/services/transfers.ts';
 
 export type TestApp = {
   base: string;
   mail: Mail[];
   deps: Deps;
+  signaling: SignalingHub;
   server: http.Server;
   close(): Promise<void>;
 };
@@ -35,16 +37,27 @@ export async function makeTestApp(
   const { db, close: closeDb } = openDb(config.dataDir);
   const mail: Mail[] = [];
   const now = opts.now ?? Date.now;
+  const big = { auth: 1e6, lookup: 1e6, miss: 1e6, upload: 1e6, ws: 1e6 };
+  const limits = { ...big, ...opts.rateLimits };
+  // signaling and transfers need each other: the closure reads `transfers` only once both exist
+  let transfers: TransferService;
+  const signaling = createSignaling({
+    config,
+    now,
+    isStoredKey: (k) => transfers.hasReadyKey(k),
+    rateLimitPerHour: limits.ws,
+  });
+  transfers = createTransferService({ db, config, now, signaling });
   const deps: Deps = {
     config,
     db,
     mailer: { send: async (msg) => void mail.push(msg) },
     now,
-    transfers: createTransferService({ db, config, now }),
+    transfers,
   };
-  const big = { auth: 1e6, lookup: 1e6, miss: 1e6, upload: 1e6, ws: 1e6 };
-  const app = createApp(deps, createRateLimits({ ...big, ...opts.rateLimits }));
+  const app = createApp(deps, createRateLimits(limits));
   const server = http.createServer(app);
+  signaling.attach(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
 
@@ -52,8 +65,10 @@ export async function makeTestApp(
     base: `http://127.0.0.1:${port}`,
     mail,
     deps,
+    signaling,
     server,
     async close() {
+      signaling.close();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       closeDb();
