@@ -47,6 +47,7 @@ export async function makeTestApp(
     now,
     isStoredKey: (k) => transfers.hasReadyKey(k),
     rateLimitPerHour: limits.ws,
+    joinMissPerWindow: limits.miss,
     heartbeatMs: opts.heartbeatMs,
   });
   transfers = createTransferService({ db, config, now, signaling });

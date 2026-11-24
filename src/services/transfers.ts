@@ -20,6 +20,7 @@ import { openStored, uniqueNames, zipStream } from './downloads.ts';
 export type Signaling = {
   isLive(key: string): boolean;
   claimLiveKey(key: string, liveToken: string): boolean;
+  releaseClaim(key: string, liveToken: string): void;
   notifyStored(key: string): void;
 };
 
@@ -315,7 +316,10 @@ export function createTransferService({
       // claiming it now also stops it expiring while the files are finalised
       const liveKey = opts.liveToken === undefined ? null : normalizeKey(opts.liveKey, config.keyLength);
       const claimLive = () => liveKey !== null && signaling?.claimLiveKey(liveKey, opts.liveToken!) === true;
-      claimLive();
+      const claimed = claimLive();
+      const release = () => {
+        if (claimed) signaling!.releaseClaim(liveKey!, opts.liveToken!);
+      };
 
       state.completing = true; // blocks new chunks and a second complete while files are finalised
       const dir = dirOf(transferId);
@@ -353,10 +357,12 @@ export function createTransferService({
           .run();
       } catch (err) {
         state.completing = false; // otherwise cleanup would skip this transfer forever
+        release(); // a failed upload must not keep the live key from expiring
         throw err;
       }
       uploads.delete(transferId);
-      if (keptLive) signaling?.notifyStored(key); // the receiver switches to a normal download
+      if (keptLive) signaling?.notifyStored(key);
+      else release(); // the receiver switches to a normal download
 
       return {
         key,

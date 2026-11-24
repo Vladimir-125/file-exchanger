@@ -3,7 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 export type LimitName = 'auth' | 'lookup' | 'miss' | 'upload' | 'ws';
 export type RateLimits = Record<LimitName, ReturnType<typeof rateLimit>>;
 
-const WINDOWS: Record<LimitName, { windowMs: number; limit: number }> = {
+export const WINDOWS: Record<LimitName, { windowMs: number; limit: number }> = {
   auth: { windowMs: 15 * 60_000, limit: 20 },
   lookup: { windowMs: 60_000, limit: 60 },
   // failed requests on any route that takes a transfer key: stops key guessing
