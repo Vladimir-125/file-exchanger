@@ -58,6 +58,7 @@ All settings are environment variables, read from the process environment or a `
 | `UPLOAD_ABANDON_MINUTES` | `60` | Minutes before an unfinished upload is discarded |
 | `SMTP_URL` | empty | SMTP connection URL, e.g. `smtps://user:pass@smtp.example.com`. Empty: email disabled |
 | `MAIL_FROM` | `File Exchanger <no-reply@localhost>` | From header of outgoing mail |
+| `STUN_URLS` | unset: `stun:stun.l.google.com:19302` | Comma-separated STUN servers for direct transfers. Set but empty (`STUN_URLS=`): no STUN server |
 | `TURN_URL` | empty | Optional TURN relay for direct transfers |
 | `TURN_USERNAME` | empty | TURN username |
 | `TURN_CREDENTIAL` | empty | TURN credential |
@@ -68,7 +69,9 @@ Browsers upload each file in chunks of `CHUNK_MB` (default 50, at most 95), one 
 
 ### ICE servers (direct transfers)
 
-Direct transfers use WebRTC. By default the only ICE server is the public STUN server `stun:stun.l.google.com:19302`; there is no setting to replace or disable it. Add a TURN relay with `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL`; it is offered in addition to STUN. Without TURN, some networks (for example behind symmetric NAT) cannot connect directly, and the sender has to use "Upload instead".
+Direct transfers use WebRTC. By default the only ICE server is the public STUN server `stun:stun.l.google.com:19302`. `STUN_URLS` replaces it with your own comma-separated list, and `STUN_URLS=` (set, but empty) uses no STUN server at all, which limits direct transfers to peers that can reach each other without address discovery (for example on the same network). Add a TURN relay with `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL`; it is offered in addition to STUN. Without TURN, some networks (for example behind symmetric NAT) cannot connect directly, and the sender has to use "Upload instead".
+
+The ICE servers, TURN username and credential included, are sent to every visitor (`/api/config` and the signaling messages), because browsers need them to connect. Anyone can read a static TURN credential there and relay their own traffic through your server. Prefer time-limited TURN credentials (for example coturn's `use-auth-secret` REST scheme, issued per session by a separate service) or a TURN server restricted by quota and allowed peer addresses.
 
 ## Running behind a reverse proxy or tunnel
 

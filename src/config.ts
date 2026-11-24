@@ -26,6 +26,7 @@ export type Config = {
 };
 
 const MB = 2 ** 20;
+const DEFAULT_STUN = 'stun:stun.l.google.com:19302';
 const GB = 2 ** 30;
 
 const num = (def: number, min: number, max = Number.MAX_SAFE_INTEGER) =>
@@ -65,6 +66,8 @@ const schema = z.object({
   UPLOAD_ABANDON_MINUTES: num(60, 0.001),
   SMTP_URL: str,
   MAIL_FROM: str,
+  // unlike APP_SECRET, empty is meaningful here: no STUN server at all
+  STUN_URLS: str,
   TURN_URL: str,
   TURN_USERNAME: str,
   TURN_CREDENTIAL: str,
@@ -95,7 +98,10 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     console.warn('APP_SECRET is not set: using a random secret, sessions and download grants reset on restart');
   }
 
-  const iceServers: IceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const iceServers: IceServer[] = [];
+  // unset: the default; set (even to empty): exactly the listed servers
+  const stun = e.STUN_URLS === undefined ? [DEFAULT_STUN] : e.STUN_URLS.split(',').map((s) => s.trim()).filter(Boolean);
+  if (stun.length) iceServers.push({ urls: stun.length === 1 ? stun[0]! : stun });
   if (e.TURN_URL) {
     const turn: IceServer = { urls: e.TURN_URL };
     if (e.TURN_USERNAME) turn.username = e.TURN_USERNAME;
