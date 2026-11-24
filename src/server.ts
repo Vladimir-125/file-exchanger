@@ -6,8 +6,9 @@ import { pathToFileURL } from 'node:url';
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 import { openDb } from './db/client.ts';
+import { createSignaling, type SignalingHub } from './realtime/signaling.ts';
 import { createMailer } from './services/mailer.ts';
-import { createTransferService } from './services/transfers.ts';
+import { createTransferService, type TransferService } from './services/transfers.ts';
 
 const CLEANUP_INTERVAL_MS = 60_000;
 
@@ -20,11 +21,16 @@ export async function startServer(
   const { db, close: closeDb } = openDb(config.dataDir);
   let timer: NodeJS.Timeout | undefined;
   let server: http.Server;
+  let signaling: SignalingHub | undefined;
   try {
     const now = Date.now;
-    const transfers = createTransferService({ db, config, now });
+    // signaling and transfers need each other: the closure reads `transfers` only once both exist
+    let transfers: TransferService;
+    signaling = createSignaling({ config, now, isStoredKey: (k) => transfers.hasReadyKey(k) });
+    transfers = createTransferService({ db, config, now, signaling });
     const app = createApp({ config, db, mailer: createMailer(config), now, transfers });
     server = http.createServer(app);
+    signaling.attach(server);
 
     const runCleanup = async () => {
       try {
@@ -46,6 +52,7 @@ export async function startServer(
     });
   } catch (err) {
     clearInterval(timer);
+    signaling?.close();
     closeDb();
     throw err;
   }
@@ -58,6 +65,7 @@ export async function startServer(
     close() {
       closing ??= (async () => {
         clearInterval(timer);
+        signaling!.close(); // upgraded sockets are not closed by closeAllConnections
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
         closeDb();

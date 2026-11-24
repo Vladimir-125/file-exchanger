@@ -300,7 +300,6 @@ export function createTransferService({
     },
 
     async complete(transferId: string, uploadToken: string, opts: CompleteOpts = {}): Promise<ReadyTransfer> {
-      // opts.liveKey / opts.liveToken are claimed through signaling once it exists (Task 8)
       const row = uploadingTransfer(transferId, uploadToken);
       const state = stateOf(row);
       if (!state || (row.passwordHash && state.password === undefined)) throw uploadLost();
@@ -312,10 +311,17 @@ export function createTransferService({
         for (let i = 0; i < chunkCount(f.size); i++) if (!got?.has(i)) throw incomplete();
       }
 
+      // a fallback upload from a direct transfer keeps the live key the receiver is waiting on;
+      // claiming it now also stops it expiring while the files are finalised
+      const liveKey = opts.liveToken === undefined ? null : normalizeKey(opts.liveKey, config.keyLength);
+      const claimLive = () => liveKey !== null && signaling?.claimLiveKey(liveKey, opts.liveToken!) === true;
+      claimLive();
+
       state.completing = true; // blocks new chunks and a second complete while files are finalised
       const dir = dirOf(transferId);
       let key: string;
       let expiresAt: number;
+      let keptLive = false;
       try {
         for (const f of files) {
           const size = await fs.stat(path.join(dir, `${f.storedName}.part`)).then((s) => s.size, () => -1);
@@ -334,10 +340,12 @@ export function createTransferService({
         }
 
         // key generation and the update are synchronous, so no other transfer can take the key meanwhile
-        const isTaken = (k: string) =>
-          signaling?.isLive(k) === true ||
+        const inDb = (k: string) =>
           db.select({ id: transfers.id }).from(transfers).where(eq(transfers.key, k)).get() !== undefined;
-        key = generateKey(config.keyLength, isTaken);
+        const isTaken = (k: string) => signaling?.isLive(k) === true || inDb(k);
+        // claimed again: the sender may have left during the awaits, freeing the key
+        keptLive = claimLive() && !inDb(liveKey!);
+        key = keptLive ? liveKey! : generateKey(config.keyLength, isTaken);
         expiresAt = now() + config.transferTtlMs; // the TTL counts from when the files become available
         db.update(transfers)
           .set({ status: 'ready', key, expiresAt: new Date(expiresAt) })
@@ -348,6 +356,7 @@ export function createTransferService({
         throw err;
       }
       uploads.delete(transferId);
+      if (keptLive) signaling?.notifyStored(key); // the receiver switches to a normal download
 
       return {
         key,
@@ -359,6 +368,16 @@ export function createTransferService({
     },
 
     findReady,
+
+    /** Whether a ready, unexpired transfer has this (normalized) key. */
+    hasReadyKey(key: string): boolean {
+      const row = db
+        .select({ expiresAt: transfers.expiresAt })
+        .from(transfers)
+        .where(and(eq(transfers.key, key), eq(transfers.status, 'ready')))
+        .get();
+      return row !== undefined && row.expiresAt.getTime() > now();
+    },
 
     /** Public metadata; a protected transfer lists its files only with a valid grant. */
     view(record: TransferRecord, grant?: string): TransferView {
