@@ -456,3 +456,55 @@ describe('aborted downloads and the miss budget', () => {
     await ok.arrayBuffer();
   });
 });
+
+describe('complete() after a partial failure', () => {
+  let t: TestApp;
+  before(async () => {
+    t = await makeTestApp({ configEnv: { CHUNK_MB: '1' } });
+  });
+  after(() => t.close());
+
+  for (const protectedTransfer of [false, true]) {
+    it(`a retry succeeds when the second of three files failed to finalise (${protectedTransfer ? 'protected' : 'plain'})`, async () => {
+      const f = protectedTransfer ? (await signedIn(t)).fetch : fetch;
+      const datas = [randomBytes(1.5 * MB), randomBytes(700), Buffer.alloc(0)].map((d, i) => (i === 2 ? randomBytes(333) : d));
+      const password = protectedTransfer ? 'pw123456' : undefined;
+      const res = await f(
+        `${t.base}/api/transfers`,
+        postJson({ files: datas.map((d, i) => ({ name: `f${i}`, size: d.length })), password }),
+      );
+      const c = (await res.json()) as { transferId: string; uploadToken: string; chunkBytes: number; files: { fileId: string }[] };
+      for (const [fi, d] of datas.entries()) {
+        for (let i = 0; i * c.chunkBytes < d.length; i++) {
+          const put = await fetch(`${t.base}/api/transfers/${c.transferId}/files/${c.files[fi]!.fileId}/chunks/${i}`, {
+            method: 'PUT',
+            headers: { 'x-upload-token': c.uploadToken },
+            body: raw(d.subarray(i * c.chunkBytes, (i + 1) * c.chunkBytes)),
+          });
+          assert.equal(put.status, 204);
+        }
+      }
+      // an empty directory where file 2 must end up makes finalising it fail after file 1 is done
+      const blocker = path.join(t.deps.config.dataDir, 'files', c.transferId, c.files[1]!.fileId);
+      fs.mkdirSync(blocker);
+      const complete = () =>
+        fetch(`${t.base}/api/transfers/${c.transferId}/complete`, { method: 'POST', headers: { 'x-upload-token': c.uploadToken } });
+      const failed = await complete();
+      assert.ok(failed.status >= 500, `first complete should fail, got ${failed.status}`);
+      await failed.arrayBuffer();
+      fs.rmdirSync(blocker);
+
+      const done = await complete();
+      assert.equal(done.status, 200, await done.clone().text());
+      const ready = (await done.json()) as Ready;
+      const grant = protectedTransfer
+        ? `?grant=${encodeURIComponent(((await (await fetch(`${t.base}/api/transfers/${ready.key}/unlock`, postJson({ password }))).json()) as any).grant)}`
+        : '';
+      for (const [i, d] of datas.entries()) {
+        const got = await fetch(`${t.base}/api/transfers/${ready.key}/files/${ready.files[i]!.fileId}${grant}`);
+        assert.equal(got.status, 200);
+        assert.ok((await body(got)).equals(d), `file ${i} differs`);
+      }
+    });
+  }
+});
