@@ -31,6 +31,7 @@ export async function startServer(
       config,
       now,
       isStoredKey: (k) => transfers.hasReadyKey(k),
+      keyInUse: (k) => transfers.keyInUse(k),
       rateLimitPerHour: WINDOWS.ws.limit,
       joinMissPerWindow: WINDOWS.miss.limit,
     });

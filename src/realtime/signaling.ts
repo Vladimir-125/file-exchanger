@@ -86,13 +86,20 @@ export function createSignaling({
   config,
   now,
   isStoredKey,
+  keyInUse,
   rateLimitPerHour,
   joinMissPerWindow,
   heartbeatMs = HEARTBEAT_MS,
 }: {
   config: Config;
   now: () => number;
+  /** A ready, unexpired stored transfer has this key: a join on it answers `not-live`. */
   isStoredKey: (key: string) => boolean;
+  /**
+   * Any transfer row has this key, expired-but-uncleaned ones included (the unique index still
+   * covers them): live key generation avoids all of these.
+   */
+  keyInUse: (key: string) => boolean;
   /** `host` messages per client IP per `WINDOWS.ws` window (1 h). */
   rateLimitPerHour: number;
   /**
@@ -157,7 +164,7 @@ export function createSignaling({
     if (peer.role) return send(ws, { type: 'error', code: 'bad_state' });
     if (hostLimit.full(peer.client)) return send(ws, { type: 'error', code: 'rate_limited' });
     hostLimit.hit(peer.client);
-    const key = generateKey(config.keyLength, (k) => rooms.has(k) || isStoredKey(k));
+    const key = generateKey(config.keyLength, (k) => rooms.has(k) || keyInUse(k));
     const liveToken = randomToken();
     const room: Room = {
       key,
@@ -281,6 +288,18 @@ export function createSignaling({
     releaseClaim(key: string, liveToken: string): void {
       const room = ownedRoom(key, liveToken);
       if (room) room.bound = false;
+    },
+
+    /**
+     * The claimed live key could not be kept: end the receiver's wait. The sender's socket stays
+     * open, its upload is still finishing and its answer carries the new key.
+     */
+    dropClaimed(key: string, liveToken: string): void {
+      const room = ownedRoom(key, liveToken);
+      if (!room) return;
+      free(room);
+      send(room.receiver, { type: 'expired' });
+      room.receiver?.close(1000);
     },
 
     /** The live key now names a stored transfer: the receiver switches to a normal download. */

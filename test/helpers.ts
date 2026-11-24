@@ -46,6 +46,7 @@ export async function makeTestApp(
     config,
     now,
     isStoredKey: (k) => transfers.hasReadyKey(k),
+    keyInUse: (k) => transfers.keyInUse(k),
     rateLimitPerHour: limits.ws,
     joinMissPerWindow: limits.miss,
     heartbeatMs: opts.heartbeatMs,
