@@ -11,6 +11,7 @@ const CONNECT_TIMEOUT_MS = 15_000; // after the receiver joins
 let app;
 let selected = [];
 let busy = false;
+let running = 0; // uploads in flight (plain or fallback): leaving the page would lose them
 
 export function init(ctx) {
   app = ctx;
@@ -49,7 +50,68 @@ export function init(ctx) {
   });
   // a direct transfer cannot carry a password: typing one turns "Send directly" off
   $('send-password').addEventListener('input', renderSelection);
+  window.addEventListener('beforeunload', (e) => {
+    if (running === 0) return;
+    e.preventDefault();
+    e.returnValue = ''; // older browsers need it to show the prompt
+  });
   refreshUser();
+}
+
+/** Counts an upload as running until `promise` settles. */
+async function tracked(promise) {
+  running++;
+  try {
+    return await promise;
+  } finally {
+    running--;
+  }
+}
+
+/**
+ * An upload finished after the person left the view it started from: its key goes to a notice
+ * shown on every view, so it is never lost. The old view itself is not touched.
+ */
+function notifyFinished(ready) {
+  const item = h(
+    'li',
+    { className: 'notice' },
+    h('p', {}, `Your upload is ready. Key: ${ready.key}`),
+    h(
+      'div',
+      { className: 'actions' },
+      h(
+        'button',
+        {
+          type: 'button',
+          className: 'btn primary',
+          onclick: () => {
+            item.remove();
+            if (location.pathname !== '/') history.pushState(null, '', '/');
+            showResult(ready);
+          },
+        },
+        'Show key and link',
+      ),
+      h('button', { type: 'button', className: 'btn', onclick: () => item.remove() }, 'Dismiss'),
+    ),
+  );
+  $('upload-notices').append(item);
+}
+
+function notifyFailed(err) {
+  const item = h(
+    'li',
+    { className: 'notice' },
+    h('p', { className: 'error' }, `An upload you started could not finish: ${friendlyError(err)}`),
+    h('div', { className: 'actions' }, h('button', { type: 'button', className: 'btn', onclick: () => item.remove() }, 'Dismiss')),
+  );
+  $('upload-notices').append(item);
+}
+
+/** Clears the selection if it still holds exactly these files (they have been sent). */
+function clearSelectionOf(files) {
+  if (selected.length === files.length && files.every((f, i) => selected[i] === f)) selected = [];
 }
 
 function formatTtl(ms) {
@@ -131,18 +193,21 @@ async function upload() {
   const mine = () => currentView() === view; // still on the Send view this upload started from
   const bar = progress('send-bar', 'send-progress-text', 'Uploaded');
   const onProgress = (sent, total) => mine() && bar(sent, total);
+  const files = selected.slice();
   try {
     const password = app.user ? $('send-password').value : '';
-    const ready = await uploadTransfer(selected, { password: password || undefined, onProgress, putChunk: xhrPutChunk });
+    const ready = await tracked(
+      uploadTransfer(files, { password: password || undefined, onProgress, putChunk: xhrPutChunk }),
+    );
     $('send-progress').hidden = true;
-    if (mine()) {
-      selected = [];
-      $('send-password').value = '';
-      showResult(ready);
-    }
+    clearSelectionOf(files);
+    $('send-password').value = '';
+    if (mine()) showResult(ready);
+    else notifyFinished(ready);
   } catch (err) {
     $('send-progress').hidden = true;
     if (mine()) setText('send-error', friendlyError(err));
+    else notifyFailed(err);
   } finally {
     setBusy(false);
   }
@@ -333,18 +398,22 @@ function startDirect(files) {
     const bar = progress('direct-bar', 'direct-progress-text', 'Uploaded');
     const onUpload = (sent, total) => mine() && bar(sent, total);
     try {
-      const ready = await uploadTransfer(files, {
-        liveKey: live.key,
-        liveToken: live.liveToken,
-        onProgress: onUpload,
-        putChunk: xhrPutChunk,
-      });
+      const ready = await tracked(
+        uploadTransfer(files, {
+          liveKey: live.key,
+          liveToken: live.liveToken,
+          onProgress: onUpload,
+          putChunk: xhrPutChunk,
+        }),
+      );
       phase = 'done';
       sig.close();
-      if (!mine()) return; // the person moved on: the upload still finished, the page stays put
-      if (selected.length === files.length && files.every((f, i) => selected[i] === f)) selected = [];
+      clearSelectionOf(files);
+      // the person moved on: the old direct view stays untouched, a notice carries the key
+      if (!mine()) return notifyFinished(ready);
       showResult(ready);
     } catch (err) {
+      if (!mine()) notifyFailed(err);
       fail(friendlyError(err));
     }
   };
