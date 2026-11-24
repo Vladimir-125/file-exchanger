@@ -44,10 +44,14 @@ const schema = z.object({
   PORT: int(3000, 0, 65535),
   DATA_DIR: str,
   BASE_URL: str,
-  APP_SECRET: z
-    .string()
-    .regex(/^[0-9a-fA-F]{64}$/, 'APP_SECRET must be 64 hex characters (openssl rand -hex 32)')
-    .optional(),
+  // an empty value (as in a copied .env.example) means unset
+  APP_SECRET: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/, 'APP_SECRET must be 64 hex characters (openssl rand -hex 32)')
+      .optional(),
+  ),
   TRUST_PROXY: str,
   COOKIE_SECURE: str,
   TRANSFER_TTL_HOURS: num(24, 0.001),
