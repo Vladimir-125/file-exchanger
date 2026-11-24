@@ -113,21 +113,34 @@ export function transfersRouter(deps: Deps, limits: RateLimits): Router {
     res.json(await transfers.unlock(String(req.params.key), password));
   });
 
+  // GET routes also answer HEAD: then only the checks run and the headers are sent, nothing is
+  // read or decrypted
   router.get('/transfers/:key/files/:fileId', limits.miss, async (req, res) => {
     const record = await ready(req);
-    const file = await transfers.openFile(record, String(req.params.fileId), grantOf(req));
-    downloadHeaders(res, file.name, file.mime);
-    // a decrypted stream has no length known up front; a plain file's size is exact
-    if (record.transfer.passwordHash === null) res.set('Content-Length', String(file.size));
-    send(file.stream, res, `${record.transfer.id}/${req.params.fileId}`);
+    const fileId = String(req.params.fileId);
+    const headers = (file: { name: string; size: number; mime: string }) => {
+      downloadHeaders(res, file.name, file.mime);
+      // a decrypted stream has no length known up front; a plain file's size is exact
+      if (record.transfer.passwordHash === null) res.set('Content-Length', String(file.size));
+    };
+    if (req.method === 'HEAD') {
+      headers(transfers.fileInfo(record, fileId, grantOf(req)));
+      return res.end();
+    }
+    const file = await transfers.openFile(record, fileId, grantOf(req));
+    headers(file);
+    send(file.stream, res, `${record.transfer.id}/${fileId}`);
   });
 
   router.get('/transfers/:key/zip', limits.miss, async (req, res) => {
     const record = await ready(req);
-    const zip = transfers.openZip(record, grantOf(req));
+    const head = req.method === 'HEAD';
+    if (head) transfers.checkAccess(record, grantOf(req));
+    const zip = head ? null : transfers.openZip(record, grantOf(req));
     downloadHeaders(res, `${record.transfer.key}.zip`, 'application/zip');
     // keys are plain alphanumerics; quoted exactly as clients expect
     res.set('Content-Disposition', `attachment; filename="${record.transfer.key}.zip"`);
+    if (!zip) return res.end();
     send(zip, res, `${record.transfer.id}/zip`);
   });
 

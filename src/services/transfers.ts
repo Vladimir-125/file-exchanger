@@ -430,6 +430,19 @@ export function createTransferService({
       return { grant, files: publicFiles(record.files) };
     },
 
+    /** A file's download metadata after the same checks openFile makes; opens nothing (HEAD). */
+    fileInfo(record: TransferRecord, fileId: string, grant?: string): Omit<OpenedFile, 'stream'> {
+      const file = record.files.find((f) => f.id === fileId);
+      if (!file) throw notFound();
+      requireKey(record, grant);
+      return { name: file.originalName, size: file.size, mime: file.mime };
+    },
+
+    /** Throws unless the grant opens the transfer (always passes for an unprotected one). */
+    checkAccess(record: TransferRecord, grant?: string): void {
+      requireKey(record, grant);
+    },
+
     /** Opens one file for download (decrypting a protected one); needs a grant when protected. */
     async openFile(record: TransferRecord, fileId: string, grant?: string): Promise<OpenedFile> {
       const file = record.files.find((f) => f.id === fileId);
