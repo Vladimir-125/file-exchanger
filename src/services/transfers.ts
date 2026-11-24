@@ -44,6 +44,7 @@ export type TransferService = ReturnType<typeof createTransferService>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MAX_MIME = 100;
 const GRANT_MS = 15 * 60_000;
+const ENC_OVERHEAD = 28; // AES-GCM file: 12-byte IV before the data, 16-byte tag after
 
 /** Per-upload state that only lives in memory: lost on restart, so such uploads cannot complete. */
 type UploadState = {
@@ -339,16 +340,36 @@ export function createTransferService({
       let expiresAt: number;
       let keptLive = false;
       try {
+        // Finalising is not atomic across files, so a failure part-way leaves some files finalised
+        // (final file present, `.part` gone) and some not. A retry must still succeed: a file counts
+        // as finalised when its `.part` is gone and its final file has the expected size (encrypted:
+        // size + ENC_OVERHEAD). Finals only ever appear by rename (plain: from the `.part`; protected:
+        // from a finished temp file), so a partial final file is never mistaken for a finished one.
+        const pending: typeof files = [];
         for (const f of files) {
-          const size = await fs.stat(path.join(dir, `${f.storedName}.part`)).then((s) => s.size, () => -1);
-          if (size !== f.size) throw incomplete();
+          const partSize = await fs.stat(path.join(dir, `${f.storedName}.part`)).then((s) => s.size, () => -1);
+          if (partSize === f.size) {
+            pending.push(f);
+            continue;
+          }
+          const finalSize = await fs
+            .stat(path.join(dir, f.storedName))
+            .then((s) => (s.isFile() ? s.size : -1), () => -1);
+          if (partSize !== -1 || finalSize !== f.size + (row.passwordHash ? ENC_OVERHEAD : 0)) throw incomplete();
         }
         const fileKey = row.passwordHash ? await deriveFileKey(state.password!, row.encSalt!) : null;
-        for (const f of files) {
+        for (const f of pending) {
           const part = path.join(dir, `${f.storedName}.part`);
           const final = path.join(dir, f.storedName);
           if (fileKey) {
-            await encryptFile(part, final, fileKey);
+            const tmp = `${final}.enc`;
+            try {
+              await encryptFile(part, tmp, fileKey);
+              await fs.rename(tmp, final);
+            } catch (err) {
+              await fs.rm(tmp, { force: true });
+              throw err;
+            }
             await fs.unlink(part);
           } else {
             await fs.rename(part, final);
