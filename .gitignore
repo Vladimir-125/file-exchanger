@@ -11,3 +11,5 @@
 /build
 
 /uploads
+# runtime data
+/data/
