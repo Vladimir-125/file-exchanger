@@ -267,12 +267,20 @@ describe('protected transfers', () => {
     fs.writeFileSync(onDisk, bytes);
     const grant = await grantFor(r.key, 'pw123456');
 
-    for (const url of [fileUrl(r, 0, grant), `${t.base}/api/transfers/${r.key}/zip?grant=${grant}`]) {
-      await assert.rejects(async () => {
+    const logged: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+    try {
+      for (const url of [fileUrl(r, 0, grant), `${t.base}/api/transfers/${r.key}/zip?grant=${grant}`]) {
+        logged.length = 0;
         const res = await fetch(url);
-        assert.equal(res.status, 200);
-        await res.arrayBuffer();
-      }, url);
+        assert.equal(res.status, 200, url);
+        await assert.rejects(res.arrayBuffer(), url);
+        await new Promise((resolve) => setTimeout(resolve, 20)); // the server logs after tearing down
+        assert.equal(logged.length, 1, url); // an integrity failure is logged, once
+      }
+    } finally {
+      console.error = original;
     }
   });
 });
@@ -354,5 +362,40 @@ describe('owner management', () => {
     assert.ok(!fs.existsSync(path.join(t.deps.config.dataDir, 'files', transferId)));
     const after = (await (await alice.fetch(`${t.base}/api/me/transfers`)).json()) as any;
     assert.deepEqual(after.transfers, [first]);
+  });
+});
+
+describe('key guessing', () => {
+  let t: TestApp;
+  before(async () => {
+    t = await makeTestApp({ rateLimits: { miss: 3 } });
+  });
+  after(() => t.close());
+
+  it('failed key requests are throttled on every key route; successful downloads are not', async () => {
+    const { ready } = await share(t, [{ name: 'x', data: Buffer.from('x') }]);
+    for (let i = 0; i < 5; i++) {
+      const ok = await fetch(`${t.base}/api/transfers/${ready.key}/files/${ready.files[0]!.fileId}`);
+      assert.equal(ok.status, 200);
+      await ok.arrayBuffer();
+    }
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(`${t.base}/api/transfers/ZZZZZ${i + 2}/zip`);
+      assert.equal(res.status, 404);
+      await res.arrayBuffer();
+    }
+    const urls: [string, RequestInit?][] = [
+      [`/api/transfers/ZZZZZZ/zip`],
+      [`/api/transfers/ZZZZZZ`],
+      [`/api/transfers/ZZZZZZ/unlock`, postJson({ password: 'x' })],
+      [`/api/transfers/ZZZZZZ/files/x`],
+      [`/api/transfers/ZZZZZZ`, { method: 'DELETE' }],
+      [`/api/transfers/${ready.key}/files/${ready.files[0]!.fileId}`],
+    ];
+    for (const [url, init] of urls) {
+      const res = await fetch(`${t.base}${url}`, init);
+      assert.equal(res.status, 429, url);
+      assert.equal(await errCode(res), 'rate_limited');
+    }
   });
 });

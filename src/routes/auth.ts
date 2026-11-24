@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { HttpError } from '../errors.ts';
 import type { Deps } from '../app.ts';
 import type { RateLimits } from '../middleware/rateLimits.ts';
+import { baseUrlOf } from './util.ts';
 import { createUserService } from '../services/users.ts';
 import type { User } from '../db/schema.ts';
 
@@ -24,13 +25,12 @@ const destroy = (req: Request) =>
 
 export function authRouters(deps: Deps, limits: RateLimits): { api: Router; confirm: Router } {
   const users = createUserService(deps);
-  const baseUrlOf = (req: Request) => deps.config.baseUrl || `${req.protocol}://${req.host}`;
   const json = express.json({ limit: '1mb' });
 
   const api = Router();
   api.post('/auth/signup', limits.auth, json, async (req, res) => {
     const body = signupBody.parse(req.body);
-    await users.signup(body, baseUrlOf(req));
+    await users.signup(body, baseUrlOf(deps.config, req));
     res.status(202).json({ ok: true });
   });
   api.post('/auth/login', limits.auth, json, async (req, res) => {

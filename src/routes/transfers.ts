@@ -6,6 +6,7 @@ import { HttpError } from '../errors.ts';
 import { requireUser } from '../middleware/auth.ts';
 import type { RateLimits } from '../middleware/rateLimits.ts';
 import type { TransferRecord } from '../services/transfers.ts';
+import { baseUrlOf } from './util.ts';
 
 const createBody = z.object({
   // the real count limit is config.maxFilesPerTransfer, checked by the service (too_many_files)
@@ -36,14 +37,20 @@ function downloadHeaders(res: Response, name: string, type: string) {
   });
 }
 
+/** Errors that only mean the client went away. */
+const QUIET = new Set(['ERR_STREAM_PREMATURE_CLOSE', 'ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ABORT_ERR']);
+
 /**
  * Pipes a download to the client. On any stream error (tampered or truncated file, client gone)
- * the response is destroyed, never ended, so a broken download cannot look complete. Errors are
- * not logged: aborts and auth failures are expected traffic here.
+ * the response is destroyed, never ended, so a broken download cannot look complete. Client
+ * aborts are quiet; anything else (a failed GCM tag is an integrity event) is logged.
  */
-function send(src: Readable, res: Response) {
+function send(src: Readable, res: Response, what: string) {
   pipeline(src, res, (err) => {
-    if (err) res.destroy();
+    if (!err) return;
+    res.destroy();
+    const code = (err as NodeJS.ErrnoException).code;
+    if (!(code && QUIET.has(code))) console.error(`download failed (${what}): ${err.message}`);
   });
 }
 
@@ -51,7 +58,6 @@ const tokenOf = (req: Request) => req.get('x-upload-token') ?? '';
 
 export function transfersRouter(deps: Deps, limits: RateLimits): Router {
   const { transfers } = deps;
-  const baseUrlOf = (req: Request) => deps.config.baseUrl || `${req.protocol}://${req.host}`;
   const json = express.json({ limit: '1mb' });
 
   const router = Router();
@@ -87,7 +93,7 @@ export function transfersRouter(deps: Deps, limits: RateLimits): Router {
     const opts = completeBody.parse(req.body ?? {});
     const ready = await transfers.complete(String(req.params.transferId), tokenOf(req), {
       ...opts,
-      baseUrl: baseUrlOf(req),
+      baseUrl: baseUrlOf(deps.config, req),
     });
     res.json(ready);
   });
@@ -98,35 +104,34 @@ export function transfersRouter(deps: Deps, limits: RateLimits): Router {
     return record;
   };
 
-  router.get('/transfers/:key', limits.lookup, async (req, res) => {
+  router.get('/transfers/:key', limits.lookup, limits.miss, async (req, res) => {
     res.json(transfers.view(await ready(req), grantOf(req)));
   });
 
-  router.post('/transfers/:key/unlock', limits.lookup, json, async (req, res) => {
+  router.post('/transfers/:key/unlock', limits.lookup, limits.miss, json, async (req, res) => {
     const { password } = unlockBody.parse(req.body);
-    const grant = await transfers.unlock(String(req.params.key), password);
-    res.json({ grant, files: transfers.view(await ready(req), grant).files });
+    res.json(await transfers.unlock(String(req.params.key), password));
   });
 
-  router.get('/transfers/:key/files/:fileId', async (req, res) => {
+  router.get('/transfers/:key/files/:fileId', limits.miss, async (req, res) => {
     const record = await ready(req);
     const file = await transfers.openFile(record, String(req.params.fileId), grantOf(req));
     downloadHeaders(res, file.name, file.mime);
     // a decrypted stream has no length known up front; a plain file's size is exact
     if (record.transfer.passwordHash === null) res.set('Content-Length', String(file.size));
-    send(file.stream, res);
+    send(file.stream, res, `${record.transfer.id}/${req.params.fileId}`);
   });
 
-  router.get('/transfers/:key/zip', async (req, res) => {
+  router.get('/transfers/:key/zip', limits.miss, async (req, res) => {
     const record = await ready(req);
     const zip = transfers.openZip(record, grantOf(req));
     downloadHeaders(res, `${record.transfer.key}.zip`, 'application/zip');
     // keys are plain alphanumerics; quoted exactly as clients expect
     res.set('Content-Disposition', `attachment; filename="${record.transfer.key}.zip"`);
-    send(zip, res);
+    send(zip, res, `${record.transfer.id}/zip`);
   });
 
-  router.delete('/transfers/:key', requireUser, async (req, res) => {
+  router.delete('/transfers/:key', limits.miss, requireUser, async (req, res) => {
     await transfers.removeOwned(String(req.params.key), req.session.userId!);
     res.status(204).end();
   });
