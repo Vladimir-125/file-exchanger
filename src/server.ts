@@ -18,19 +18,25 @@ export async function startServer(
   const log = opts.log ?? console.log;
   const config = loadConfig(env);
   const { db, close: closeDb } = openDb(config.dataDir);
-  const now = Date.now;
-  const transfers = createTransferService({ db, config, now });
-  const app = createApp({ config, db, mailer: createMailer(config), now, transfers });
-  const server = http.createServer(app);
-
-  const runCleanup = () => {
-    transfers.cleanup().catch((err) => console.error('cleanup failed:', err));
-  };
-  runCleanup();
-  const timer = setInterval(runCleanup, CLEANUP_INTERVAL_MS);
-  timer.unref();
-
+  let timer: NodeJS.Timeout | undefined;
+  let server: http.Server;
   try {
+    const now = Date.now;
+    const transfers = createTransferService({ db, config, now });
+    const app = createApp({ config, db, mailer: createMailer(config), now, transfers });
+    server = http.createServer(app);
+
+    const runCleanup = async () => {
+      try {
+        await transfers.cleanup();
+      } catch (err) {
+        console.error('cleanup failed:', err);
+      }
+    };
+    void runCleanup();
+    timer = setInterval(() => void runCleanup(), CLEANUP_INTERVAL_MS);
+    timer.unref();
+
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(config.port, () => {
@@ -46,13 +52,17 @@ export async function startServer(
   const url = `http://localhost:${(server.address() as AddressInfo).port}`;
   log(`Listening on ${url}`);
 
+  let closing: Promise<void> | undefined;
   return {
     url,
-    async close() {
-      clearInterval(timer);
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      closeDb();
+    close() {
+      closing ??= (async () => {
+        clearInterval(timer);
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        closeDb();
+      })();
+      return closing;
     },
   };
 }
@@ -69,7 +79,10 @@ function isMain(): boolean {
 
 if (isMain()) {
   dotenv.config({ quiet: true });
-  const srv = await startServer(process.env);
+  const srv = await startServer(process.env).catch((err) => {
+    console.error(`Failed to start: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  });
   const stop = () => {
     srv.close().then(
       () => process.exit(0),
