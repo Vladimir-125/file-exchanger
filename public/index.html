@@ -1,1 +1,175 @@
-<!doctype html><title>File Exchanger</title>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>File Exchanger</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/vendor/qrcode.min.js"></script>
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" data-nav="/">File Exchanger</a>
+    <nav class="nav" aria-label="Main">
+      <a href="/" data-nav="/" data-tab="send">Send</a>
+      <a href="/receive" data-nav="/receive" data-tab="receive">Receive</a>
+      <a href="/account" data-nav="/account" data-tab="account" id="nav-account">Account</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <!-- Send -->
+    <section id="view-send" class="view" hidden aria-labelledby="send-title">
+      <h1 id="send-title">Send files</h1>
+      <label id="drop" class="drop" for="file-input">
+        <span class="drop-title">Drop files here</span>
+        <span class="drop-sub">or tap to choose</span>
+        <input id="file-input" class="visually-hidden" type="file" multiple>
+      </label>
+      <p id="limits" class="muted small"></p>
+      <ul id="send-files" class="files" aria-label="Selected files"></ul>
+      <p id="send-total" class="muted small" hidden></p>
+      <div id="password-row" class="field" hidden>
+        <label for="send-password">Password (optional)</label>
+        <input id="send-password" type="password" autocomplete="new-password" maxlength="200">
+        <p class="muted small">Files with a password are stored encrypted. Only signed-in users can protect files. Direct sending does not use a password.</p>
+      </div>
+      <p id="password-note" class="muted small">Sign in to protect files with a password.</p>
+      <div class="actions">
+        <button id="btn-upload" type="button" class="btn primary" disabled>Upload</button>
+        <button id="btn-direct" type="button" class="btn" disabled>Send directly</button>
+      </div>
+      <p id="direct-password-note" class="muted small" hidden>Send directly does not support passwords. Clear the password to use it.</p>
+      <p class="muted small">Upload stores the files on the server for a limited time. Send directly passes them straight to the other device while both pages stay open.</p>
+      <div id="send-progress" class="progress-box" hidden>
+        <progress id="send-bar" max="1" value="0"></progress>
+        <p id="send-progress-text" class="small" aria-live="polite"></p>
+      </div>
+      <p id="send-error" class="error" role="alert"></p>
+    </section>
+
+    <!-- Result -->
+    <section id="view-result" class="view" hidden aria-labelledby="result-title">
+      <h1 id="result-title">Ready to share</h1>
+      <p class="muted">Enter this key on the receiving device, or open the link.</p>
+      <p id="result-key" class="big-key"></p>
+      <div class="share">
+        <input id="result-url" class="url" type="text" readonly aria-label="Share link">
+        <button id="btn-copy" type="button" class="btn">Copy link</button>
+      </div>
+      <p id="copy-status" class="small" aria-live="polite"></p>
+      <div id="result-qr" class="qr" aria-label="QR code of the share link" role="img"></div>
+      <p id="result-protected" class="small" hidden>Protected with a password. Share the password separately.</p>
+      <p id="result-expiry" class="muted" aria-live="off"></p>
+      <ul id="result-files" class="files" aria-label="Files"></ul>
+      <div class="actions"><button id="btn-send-more" type="button" class="btn">Send more files</button></div>
+    </section>
+
+    <!-- Receive -->
+    <section id="view-receive" class="view" hidden aria-labelledby="receive-title">
+      <h1 id="receive-title">Receive files</h1>
+      <form id="key-form" class="inline-form">
+        <label for="key-input">Key</label>
+        <div class="row">
+          <input id="key-input" class="key-input" type="text" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" placeholder="K7PX3M" required>
+          <button type="submit" class="btn primary">Open</button>
+        </div>
+      </form>
+      <p id="receive-status" class="small" aria-live="polite"></p>
+      <form id="unlock-form" class="inline-form" hidden>
+        <label for="unlock-password">This transfer is protected. Enter its password.</label>
+        <div class="row">
+          <input id="unlock-password" type="password" autocomplete="off" maxlength="200" required>
+          <button type="submit" class="btn primary">Unlock</button>
+        </div>
+      </form>
+      <div id="receive-box" hidden>
+        <p id="receive-key" class="key-line"></p>
+        <p id="receive-expiry" class="muted"></p>
+        <ul id="receive-files" class="files" aria-label="Files"></ul>
+        <div class="actions"><a id="receive-zip" class="btn primary" href="/" download>Download all (.zip)</a></div>
+      </div>
+      <p id="receive-error" class="error" role="alert"></p>
+    </section>
+
+    <!-- Direct (both sides) -->
+    <section id="view-direct" class="view" hidden aria-labelledby="direct-title">
+      <h1 id="direct-title">Direct transfer</h1>
+      <div id="direct-sender" hidden>
+        <p class="muted">Open this key or link on the other device. Keep this page open.</p>
+        <p id="direct-key" class="big-key"></p>
+        <div class="share">
+          <input id="direct-url" class="url" type="text" readonly aria-label="Share link">
+          <button id="btn-direct-copy" type="button" class="btn">Copy link</button>
+        </div>
+        <div id="direct-qr" class="qr" aria-label="QR code of the share link" role="img"></div>
+        <p id="direct-expiry" class="muted"></p>
+      </div>
+      <p id="direct-status" class="status" aria-live="polite"></p>
+      <div id="direct-fallback" class="notice" hidden>
+        <p>Couldn't connect directly. Upload instead?</p>
+        <div class="actions">
+          <button id="btn-fallback" type="button" class="btn primary">Upload instead</button>
+          <button id="btn-fallback-wait" type="button" class="btn">Keep trying</button>
+        </div>
+      </div>
+      <div id="direct-progress" class="progress-box" hidden>
+        <progress id="direct-bar" max="1" value="0"></progress>
+        <p id="direct-progress-text" class="small" aria-live="polite"></p>
+      </div>
+      <ul id="direct-files" class="files" aria-label="Received files"></ul>
+      <p id="direct-error" class="error" role="alert"></p>
+      <div class="actions"><button id="btn-direct-cancel" type="button" class="btn">Cancel</button></div>
+    </section>
+
+    <!-- Account -->
+    <section id="view-account" class="view" hidden aria-labelledby="account-title">
+      <h1 id="account-title">Account</h1>
+      <div id="account-out">
+        <form id="login-form" class="card">
+          <h2>Sign in</h2>
+          <div class="field">
+            <label for="login-email">Email</label>
+            <input id="login-email" type="email" autocomplete="email" maxlength="254" required>
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" maxlength="200" required>
+          </div>
+          <button type="submit" class="btn primary">Sign in</button>
+          <p id="login-error" class="error" role="alert"></p>
+        </form>
+        <form id="signup-form" class="card">
+          <h2>Create an account</h2>
+          <div class="field">
+            <label for="signup-name">Name</label>
+            <input id="signup-name" type="text" autocomplete="name" maxlength="100" required>
+          </div>
+          <div class="field">
+            <label for="signup-email">Email</label>
+            <input id="signup-email" type="email" autocomplete="email" maxlength="254" required>
+          </div>
+          <div class="field">
+            <label for="signup-password">Password (at least 8 characters)</label>
+            <input id="signup-password" type="password" autocomplete="new-password" minlength="8" maxlength="200" required>
+          </div>
+          <button type="submit" class="btn primary">Sign up</button>
+          <p id="signup-status" class="small" aria-live="polite"></p>
+          <p id="signup-error" class="error" role="alert"></p>
+        </form>
+      </div>
+      <div id="account-in" hidden>
+        <p>Signed in as <strong id="account-name"></strong> <span id="account-email" class="muted"></span></p>
+        <div class="actions"><button id="btn-logout" type="button" class="btn">Sign out</button></div>
+        <h2>My transfers</h2>
+        <p id="my-empty" class="muted" hidden>No active transfers.</p>
+        <ul id="my-transfers" class="files" aria-label="My transfers"></ul>
+        <p id="my-error" class="error" role="alert"></p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
