@@ -106,6 +106,32 @@ describe('plain transfers', () => {
     for (const data of [a, b, c]) assert.ok(zip.includes(data)); // stored, not compressed
   });
 
+  it('HEAD on a file or zip answers the headers without opening any stream', async () => {
+    const data = randomBytes(1000);
+    const { ready } = await share(t, [{ name: 'h.bin', data }]);
+    const svc = t.deps.transfers;
+    const opened: string[] = [];
+    const { openFile, openZip } = svc;
+    svc.openFile = (...args) => (opened.push('file'), openFile(...args));
+    svc.openZip = (...args) => (opened.push('zip'), openZip(...args));
+    try {
+      const file = await fetch(`${t.base}/api/transfers/${ready.key}/files/${ready.files[0]!.fileId}`, { method: 'HEAD' });
+      assert.equal(file.status, 200);
+      assert.equal(file.headers.get('content-length'), String(data.length));
+      assert.match(file.headers.get('content-disposition')!, /^attachment; filename="?h\.bin"?$/);
+      assert.equal(file.headers.get('x-content-type-options'), 'nosniff');
+      const zip = await fetch(`${t.base}/api/transfers/${ready.key}/zip`, { method: 'HEAD' });
+      assert.equal(zip.status, 200);
+      assert.equal(zip.headers.get('content-disposition'), `attachment; filename="${ready.key}.zip"`);
+      const missing = await fetch(`${t.base}/api/transfers/${ready.key}/files/00000000-0000-4000-8000-000000000000`, { method: 'HEAD' });
+      assert.equal(missing.status, 404);
+      assert.deepEqual(opened, []);
+    } finally {
+      svc.openFile = openFile;
+      svc.openZip = openZip;
+    }
+  });
+
   it('a zero-byte file downloads as an empty 200', async () => {
     const { ready } = await share(t, [{ name: 'empty.txt', data: Buffer.alloc(0) }]);
     const res = await fetch(`${t.base}/api/transfers/${ready.key}/files/${ready.files[0]!.fileId}`);
@@ -191,7 +217,9 @@ describe('protected transfers', () => {
     assert.equal(badGrant.status, 401);
     const zip = await fetch(`${t.base}/api/transfers/${ready.key}/zip`);
     assert.equal(zip.status, 401);
-    assert.equal(await errCode(zip), 'password_required');
+    assert.equal(await errCode(zip), 'password_required');    for (const url of [fileUrl(ready, 0), `${t.base}/api/transfers/${ready.key}/zip`]) {
+      assert.equal((await fetch(url, { method: 'HEAD' })).status, 401, `HEAD ${url}`);
+    }
   });
 
   it('a wrong password is 401 wrong_password; the right one returns a grant and the files', async () => {
